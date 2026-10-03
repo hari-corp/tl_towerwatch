@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
-from tl_towerwatch.config import load_settings
+from tl_towerwatch.config import Settings, load_settings
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.db.models import PullRequest, ReviewRun, PRSummary, Repo
 from tl_towerwatch.services.pull_requests import list_prs_for_dashboard
@@ -155,3 +155,54 @@ def pr_run_review(owner: str, name: str, number: int,
                    agent_name=agent, skill_names=skill_names, mode=mode,
                    timeout_seconds=300, settings=settings)
     return RedirectResponse(f"/pr/{owner}/{name}/{number}", status_code=303)
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request):
+    settings = load_settings()
+    return templates.TemplateResponse(request, "settings.html",
+        {"nav": "settings", "theme": _theme(request),
+         "settings": settings})
+
+@router.post("/settings/auth/save")
+def settings_auth_save(github_token: str = Form(""),
+                       oauth_client_id: str = Form(""),
+                       oauth_client_secret: str = Form("")):
+    settings = load_settings()
+    settings.github_token = github_token
+    settings.oauth_client_id = oauth_client_id
+    settings.oauth_client_secret = oauth_client_secret
+    _persist_env(settings)
+    return RedirectResponse("/settings", status_code=303)
+
+@router.post("/settings/llm/save")
+def settings_llm_save(provider: str = Form("anthropic"),
+                      anthropic_api_key: str = Form(""),
+                      openai_api_key: str = Form(""),
+                      ollama_base_url: str = Form("")):
+    settings = load_settings()
+    settings.llm.default_provider = provider
+    settings.llm.anthropic.api_key = anthropic_api_key
+    settings.llm.openai.api_key = openai_api_key
+    settings.llm.ollama.base_url = ollama_base_url
+    _persist_env(settings)
+    return RedirectResponse("/settings", status_code=303)
+
+def _persist_env(settings: Settings) -> None:
+    import os
+    env_path = settings.data_dir / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    updates = {
+        "TOWERWATCH_GITHUB_TOKEN": settings.github_token,
+        "TOWERWATCH_OAUTH_CLIENT_ID": settings.oauth_client_id,
+        "TOWERWATCH_OAUTH_CLIENT_SECRET": settings.oauth_client_secret,
+        "TOWERWATCH_LLM_PROVIDER": settings.llm.default_provider,
+        "TOWERWATCH_ANTHROPIC_API_KEY": settings.llm.anthropic.api_key,
+        "TOWERWATCH_OPENAI_API_KEY": settings.llm.openai.api_key,
+        "TOWERWATCH_OLLAMA_BASE_URL": settings.llm.ollama.base_url,
+    }
+    keys = set(updates.keys())
+    new_lines = [ln for ln in lines if not any(ln.startswith(k + "=") for k in keys)]
+    new_lines += [f"{k}={v}" for k, v in updates.items() if v]
+    tmp = env_path.with_suffix(".env.tmp")
+    tmp.write_text("\n".join(new_lines) + "\n")
+    os.replace(tmp, env_path)

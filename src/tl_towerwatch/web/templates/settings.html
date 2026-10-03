@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="card">
+    <h3>GitHub Auth</h3>
+    <form method="post" action="/settings/auth/save">
+      <label>PAT</label>
+      <input name="github_token" value="{{ settings.github_token }}" style="width:100%">
+      <label>OAuth client_id</label>
+      <input name="oauth_client_id" value="{{ settings.oauth_client_id }}" style="width:100%">
+      <label>OAuth client_secret</label>
+      <input name="oauth_client_secret" type="password" value="{{ settings.oauth_client_secret }}" style="width:100%">
+      <button class="primary" type="submit">Guardar</button>
+    </form>
+  </div>
+  <div class="card">
+    <h3>LLM</h3>
+    <form method="post" action="/settings/llm/save">
+      <label>Default provider</label>
+      <select name="provider">
+        {% for p in ["anthropic","openai","ollama"] %}
+          <option {% if p == settings.llm.default_provider %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+      <label>Anthropic API key</label>
+      <input name="anthropic_api_key" value="{{ settings.llm.anthropic.api_key }}" style="width:100%">
+      <label>OpenAI API key</label>
+      <input name="openai_api_key" value="{{ settings.llm.openai.api_key }}" style="width:100%">
+      <label>Ollama base URL</label>
+      <input name="ollama_base_url" value="{{ settings.llm.ollama.base_url }}" style="width:100%">
+      <button class="primary" type="submit">Guardar</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

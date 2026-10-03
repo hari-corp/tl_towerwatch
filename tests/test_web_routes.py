@@ -53,3 +53,15 @@ def test_pr_detail_renders(tmp_path, monkeypatch):
         r = c.get("/pr/o/n/1")
         assert r.status_code == 200
         assert "PR" in r.text
+
+def test_settings_route_renders(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/settings")
+        assert r.status_code == 200
+        assert "LLM" in r.text or "Auth" in r.text
