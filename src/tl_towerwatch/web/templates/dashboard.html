@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>PRs</h1>
+<p style="color:var(--muted)">{{ prs|length }} PRs visibles · login: {{ login }}</p>
+{% for pr in prs %}
+<div class="card" style="margin-bottom:10px">
+  <strong>{{ pr.title }}</strong>
+  <div style="color:var(--muted);font-size:12px;margin-top:4px">
+    {{ pr.author_login }} · updated {{ pr.updated_at }} · head {{ pr.head_sha[:7] }}
+  </div>
+  {% for b in badges_by_pr.get(pr.id, []) %}
+    <span style="background:{{ b.color }}22;color:{{ b.color }};padding:2px 8px;border-radius:10px;font-size:11px">{{ b.name }}</span>
+  {% endfor %}
+</div>
+{% else %}
+<p>0 PRs. Usa <code>tl_towerwatch repo add owner/name</code> para empezar.</p>
+{% endfor %}
+{% endblock %}
