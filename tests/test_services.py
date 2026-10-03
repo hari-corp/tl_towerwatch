@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import respx
@@ -6,6 +7,7 @@ from httpx import Response
 
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
+from tl_towerwatch.db.models import ReviewFinding, ReviewRun
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.llm.base import LLMProvider
 from tl_towerwatch.services.pull_requests import (
@@ -20,6 +22,7 @@ from tl_towerwatch.services.repos import (
     normalize_authors,
     set_allowed_authors,
 )
+from tl_towerwatch.services.review_runner import run_review
 from tl_towerwatch.services.reviews import compute_badges
 
 
@@ -272,3 +275,28 @@ def test_sync_regenerates_summary_on_head_change(tmp_path):
         sync_one_pr(db, gh, repo, 1, llm=llm)
         sync_one_pr(db, gh, repo, 1, llm=llm)
     assert llm.calls == 1
+
+
+@respx.mock
+def test_run_review_end_to_end(tmp_path, monkeypatch, fake_claude):
+    monkeypatch.setenv("PATH", f"{fake_claude.parent}:{os.environ['PATH']}")
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number":1,"title":"t","body":"b","user":{"login":"a"},"state":"open",
+                   "draft":False,"head":{"sha":"s1"},"base":{"ref":"main"},
+                   "html_url":"u","created_at":"2026-01-01T00:00:00Z",
+                   "updated_at":"2026-01-01T00:00:00Z","requested_reviewers":[]}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[
+        {"filename":"a.py","additions":1,"deletions":0,"status":"added","patch":"+ x\n"}]))
+    settings = load_settings(tmp_path)
+    with GitHubClient(token="x") as gh:
+        run_review(db, gh, owner="o", name="n", number=1,
+                   agent_name="claude", skill_names=["superpowers"],
+                   mode="fresh", timeout_seconds=10, settings=settings)
+    with db.session() as s:
+        run_row = s.query(ReviewRun).order_by(ReviewRun.id.desc()).first()
+        assert run_row.status == "done"
+        assert s.query(ReviewFinding).filter_by(review_run_id=run_row.id).count() == 1
