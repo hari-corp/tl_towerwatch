@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, re
 from sqlalchemy import select
 from tl_towerwatch.db.database import Database
-from tl_towerwatch.db.models import ReviewRun, ReviewFinding, now_iso
+from tl_towerwatch.db.models import PullRequest, ReviewRun, ReviewFinding, now_iso
 
 def finding_key(file_path: str, line: int, description: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", description.lower()).strip("-")[:40] or "x"
@@ -14,6 +14,9 @@ def reconcile(db: Database, new_run_id: int) -> None:
         if new_run is None:
             return
         pr_id = new_run.pr_id
+        # Spec §9 step 6: resolved findings record the new PR's head_sha.
+        new_pr = s.get(PullRequest, pr_id)
+        new_pr_head_sha = new_pr.head_sha if new_pr is not None else ""
         # Find the most recent prior 'done' run for the same PR
         prior = s.execute(
             select(ReviewRun).where(ReviewRun.pr_id == pr_id,
@@ -41,5 +44,5 @@ def reconcile(db: Database, new_run_id: int) -> None:
         for k, prev_f in prior_keys.items():
             if k not in seen_keys:
                 prev_f.status = "resolved"
-                prev_f.resolved_in_commit = new_run.started_at  # proxy; ideally head_sha at run time
+                prev_f.resolved_in_commit = new_pr_head_sha
         s.flush()
