@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<a href="/">← dashboard</a>
+<h1>{{ pr.title if pr else "PR no encontrado" }}</h1>
+{% if pr %}
+  <p style="color:var(--muted)">{{ pr.author_login }} · #{{ pr.number }} · {{ pr.head_sha[:7] }}</p>
+  {% if summary %}
+    <div class="card" style="margin:12px 0;border-left:3px solid var(--accent)">
+      <strong>RESUMEN</strong>
+      <p>{{ summary.summary }}</p>
+    </div>
+  {% endif %}
+  <form method="post" action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/run-review" class="card">
+    <label>Agent:</label>
+    <select name="agent">
+      <option>claude</option><option>codex</option><option>minimax</option><option>ollama</option>
+    </select>
+    <label>Skills:</label>
+    <input name="skills" placeholder="superpowers,ponytail">
+    <label>Mode:</label>
+    <select name="mode"><option>fresh</option><option>compare</option></select>
+    <button class="primary" type="submit">▶ Run review</button>
+  </form>
+  {% if runs %}
+    <h3>Historial de reviews</h3>
+    {% for run in runs %}
+      <div class="card" style="margin-bottom:8px">
+        <strong>Run #{{ run.id }}</strong> · {{ run.status }} · {{ run.agent_runner }} · {{ run.started_at }}
+        {% if run.error %}<p style="color:#f78166">{{ run.error }}</p>{% endif %}
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endif %}
+{% endblock %}

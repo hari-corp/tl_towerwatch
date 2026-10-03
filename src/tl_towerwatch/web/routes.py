@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json as _json
+from sqlalchemy import select
 from fastapi import APIRouter, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
+from tl_towerwatch.db.models import PullRequest, ReviewRun, PRSummary, Repo
 from tl_towerwatch.services.pull_requests import list_prs_for_dashboard
 from tl_towerwatch.services.reviews import compute_badges
 from tl_towerwatch.services.repos import (
@@ -14,6 +16,9 @@ from tl_towerwatch.services.repos import (
     set_repo_enabled as svc_set_repo_enabled, remove_repo as svc_remove_repo,
     set_allowed_authors as svc_set_allowed_authors,
 )
+from tl_towerwatch.services.review_runner import run_review
+from tl_towerwatch.services.pull_requests import sync_one_pr
+from tl_towerwatch.llm import get_provider
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.auth.github import resolve_token
 
@@ -103,3 +108,50 @@ async def theme(theme: str = Form(...)):
 
 def _theme(request: Request) -> str:
     return request.cookies.get("tl_towerwatch_theme", "dark")
+
+@router.get("/pr/{owner}/{name}/{number}", response_class=HTMLResponse)
+def pr_detail(request: Request, owner: str, name: str, number: int):
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        repo = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one_or_none()
+        pr = None
+        summary = None
+        runs = []
+        if repo:
+            pr = s.execute(select(PullRequest).where(
+                PullRequest.repo_id == repo.id, PullRequest.number == number
+            )).scalar_one_or_none()
+            if pr:
+                summary = s.get(PRSummary, pr.id)
+                runs = list(s.execute(select(ReviewRun).where(ReviewRun.pr_id == pr.id)
+                             .order_by(ReviewRun.id.desc())).scalars())
+    return templates.TemplateResponse(request, "pr_detail.html",
+        {"nav": "home", "theme": _theme(request),
+         "pr": pr, "summary": summary, "runs": runs, "owner": owner, "name": name})
+
+@router.post("/pr/{owner}/{name}/{number}/refresh")
+def pr_refresh(owner: str, name: str, number: int):
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    with db.session() as s:
+        repo = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
+    llm = get_provider(settings) if settings.llm.anthropic.api_key else None
+    with GitHubClient(token=resolve_token(settings)) as gh:
+        sync_one_pr(db, gh, repo, number, llm=llm)
+    return RedirectResponse(f"/pr/{owner}/{name}/{number}", status_code=303)
+
+@router.post("/pr/{owner}/{name}/{number}/run-review")
+def pr_run_review(owner: str, name: str, number: int,
+                  agent: str = Form(...),
+                  skills: str = Form(""),
+                  mode: str = Form("fresh")):
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    skill_names = [s.strip() for s in skills.split(",") if s.strip()]
+    with GitHubClient(token=resolve_token(settings)) as gh:
+        run_review(db, gh, owner=owner, name=name, number=number,
+                   agent_name=agent, skill_names=skill_names, mode=mode,
+                   timeout_seconds=300, settings=settings)
+    return RedirectResponse(f"/pr/{owner}/{name}/{number}", status_code=303)
