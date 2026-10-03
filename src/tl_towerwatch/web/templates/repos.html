@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Repos</h1>
+<form method="post" action="/repos/add" class="card" style="margin-bottom:14px;display:flex;gap:8px">
+  <input name="owner_name" placeholder="owner/name" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px;border-radius:5px;font-family:monospace">
+  <input name="authors" placeholder="autores (opcional, comma-separated)" style="flex:2;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px;border-radius:5px">
+  <button class="primary" type="submit">+ Agregar</button>
+</form>
+{% for r in repos %}
+<div class="card" style="margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <strong>{{ r.owner }}/{{ r.name }}</strong>
+    <span style="color:var(--muted);font-size:11px">{{ "ACTIVO" if r.enabled else "PAUSADO" }} · last fetch: {{ r.last_fetched_at or "—" }}</span>
+  </div>
+  <form method="post" action="/repos/{{ r.owner }}/{{ r.name }}/set-authors" style="margin-top:8px;display:flex;gap:6px">
+    <input name="authors" value="{{ r.allowed_authors_csv }}" placeholder="autores allowlist" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:5px 8px;border-radius:5px">
+    <button type="submit">Guardar autores</button>
+  </form>
+</div>
+{% endfor %}
+{% endblock %}

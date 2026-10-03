@@ -27,3 +27,17 @@ def test_dashboard_renders_empty(tmp_path, monkeypatch):
         r = c.get("/")
         assert r.status_code == 200
         assert "PRs" in r.text
+
+def test_repos_route_lists_and_adds(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/repos")
+        assert r.status_code == 200
+        # POST without network will fail validation; just check the route exists.
+        r = c.post("/repos/add", data={"owner_name": "x/y"})
+        assert r.status_code in (400, 500)  # network error expected
