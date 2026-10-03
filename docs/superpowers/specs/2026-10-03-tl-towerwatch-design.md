@@ -63,6 +63,9 @@ provides the visual interface.
 tl_towerwatch/
 ├── pyproject.toml
 ├── README.md
+├── Dockerfile
+├── docker-compose.yml
+├── .dockerignore
 ├── .env.example
 ├── src/tl_towerwatch/
 │   ├── __init__.py
@@ -607,7 +610,133 @@ repos:
 Loaded via Pydantic Settings; writes happen atomically (tmp file + rename) so
 a crashed write cannot corrupt config.
 
-## 11. Per-repo author filtering
+## 11. Deployment — Docker
+
+`tl_towerwatch` ships as a container image so the user can run it without
+cluttering their host Python environment, while keeping all of their data
+on the host for portability and easy backups.
+
+### 11.1 Image
+
+Multi-stage `Dockerfile`:
+
+- **Stage 1 (builder):** `python:3.11-slim`; install `uv`; copy sources;
+  run `uv pip install --system .` (or `uv sync` for `uv.lock`-based dev).
+- **Stage 2 (runtime):** `python:3.11-slim` again, non-root user
+  (`tl_towerwatch`); copy the installed packages and the `src/` tree from
+  stage 1; expose `8000`; default `CMD` is `tl_towerwatch serve --host 0.0.0.0 --port 8000`.
+
+`.dockerignore` excludes `.git`, `data/`, `.venv`, `.superpowers`, `tests/`,
+`__pycache__`, `*.pyc`.
+
+### 11.2 Local data layout (host)
+
+```
+~/tl_towerwatch-data/
+├── config.yaml
+├── .env
+└── tl_towerwatch.db
+```
+
+The user creates this directory once and passes it as a bind mount.
+
+### 11.3 `docker-compose.yml`
+
+```yaml
+services:
+  tl_towerwatch:
+    build: .
+    image: tl_towerwatch:latest
+    container_name: tl_towerwatch
+    restart: unless-stopped
+    ports:
+      - "8000:8000"           # dashboard
+    environment:
+      TOWERWATCH_DATA_DIR: /data
+      # Hostname the container uses to reach services on the host:
+      TOWERWATCH_HOST_ALIAS: host.docker.internal
+    volumes:
+      - ~/tl_towerwatch-data:/data
+    # `extra_hosts` makes `host.docker.internal` resolve on Linux too:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+`TOWERWATCH_DATA_DIR=/data` is the in-container directory where `config.yaml`,
+`.env`, and `tl_towerwatch.db` live; the bind mount makes them identical to
+the host's `~/tl_towerwatch-data/`. `tl_towerwatch serve` defaults to that
+data dir, so the user only ever touches files on the host.
+
+### 11.4 Auth modes in Docker
+
+**PAT (recommended for Docker):**
+
+1. Generate a PAT on GitHub with scopes `repo` and `read:user`.
+2. Put it in `~/tl_towerwatch-data/.env`:
+   ```
+   TOWERWATCH_GITHUB_TOKEN=ghp_...
+   TOWERWATCH_LLM_PROVIDER=anthropic
+   TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-...
+   ```
+3. `docker compose up -d` → open `http://localhost:8000`.
+
+No browser round-trip needed; the container starts, validates the token on
+the first GitHub call, and works.
+
+**OAuth (more setup):**
+
+OAuth requires a localhost callback server, which is awkward from inside a
+container. The supported workflow is:
+
+1. Run `tl_towerwatch init` **on the host** once with OAuth credentials,
+   complete the browser flow, and let it write the OAuth tokens into
+   `~/tl_towerwatch-data/.env`.
+2. Then `docker compose up -d` — the container reads the existing tokens
+   and skips the browser step.
+3. If tokens need to be refreshed, `docker compose exec tl_towerwatch \
+   tl_towerwatch auth refresh` re-runs the OAuth dance from inside the
+   container, with the callback URL set to `http://host.docker.internal:8765/auth/callback`
+   so the host browser can reach the in-container server.
+
+The host alias (`host.docker.internal` / `host-gateway`) is plumbed into the
+OAuth client at runtime via the `TOWERWATCH_HOST_ALIAS` env var.
+
+### 11.5 Agent runners in Docker
+
+The agent CLIs (`claude`, `codex`, `minimax`) are external binaries, not
+Python packages. The image does **not** ship them. Three supported
+configurations:
+
+| Goal | How |
+|---|---|
+| Fully-local agent, no host deps | Use `OllamaAgentRunner` (Ollama runs on host; container reaches it at `http://host.docker.internal:11434`). |
+| Specific external agent (Claude/Codex/MiniMax) | Extend the image in your own `Dockerfile.override` that runs the vendor's installer, **or** mount the binary via a read-only bind mount in `docker-compose.yml` (e.g. `/usr/local/bin/claude:/usr/local/bin/claude:ro`). |
+| No agent needed (summaries only) | Use the LLM summary providers (Anthropic / OpenAI / Ollama) and never run a review — the container doesn't need any external CLI. |
+
+`tl_towerwatch init` (or the equivalent health-check in Settings) reports
+which agents are reachable and shows a clear error if the chosen one isn't.
+
+### 11.6 Image versioning
+
+- `latest` tracks `main`.
+- Tagged releases (`v0.1.0`, `v0.2.0`, …) are immutable.
+- `uv.lock` is the source of truth for installed Python deps; the image
+  rebuilds are reproducible.
+
+### 11.7 Non-Docker host install
+
+The README documents the alternative:
+
+```
+uv tool install tl_towerwatch
+tl_towerwatch init
+tl_towerwatch serve
+```
+
+Both install paths (container + uv tool) share the same `./data/` layout,
+so a user can move between them without re-doing `init`.
+
+## 12. Per-repo author filtering
 
 Each repo can carry an allowlist of GitHub logins in `allowed_authors_json`.
 When the list is empty (the default), no author filter is applied. When
@@ -634,7 +763,7 @@ Semantics:
 
 CLI commands and UI are documented in §4 and §5.3.
 
-## 12. Error handling
+## 13. Error handling
 
 - **GitHub API errors** — surfaced in the UI with the error message and a
   retry button. Rate-limit headers are parsed and the next allowed fetch
@@ -655,7 +784,7 @@ CLI commands and UI are documented in §4 and §5.3.
   2000) / `max_files` (default 30) with an explanatory note in the prompt
   and a UI note on the review card.
 
-## 12. Testing
+## 14. Testing
 
 | Layer | Approach |
 |---|---|
@@ -669,7 +798,7 @@ CLI commands and UI are documented in §4 and §5.3.
 
 Coverage target: ≥ 85% on `services/`, `llm/`, `agents/`, `findings/`.
 
-## 13. Open questions / future work
+## 15. Open questions / future work
 
 - **Multi-user / team mode** — not in v1. The data model doesn't preclude it,
   but the auth flow assumes one local user.
@@ -682,3 +811,8 @@ Coverage target: ≥ 85% on `services/`, `llm/`, `agents/`, `findings/`.
   if not available, fall back to shelling out to the `minimax` CLI.
 - **Skill versioning** — v1 assumes skills are opaque names; v2 could
   pin to a skill version.
+- **Cross-platform Docker host networking** — `host.docker.internal` works
+  out of the box on Docker Desktop (macOS/Windows); on Linux we add the
+  `host-gateway` extra_hosts entry. Linux distros without docker-rootless
+  setups and corporate proxies with split DNS need per-field case testing
+  before tagging a stable v1.0.
