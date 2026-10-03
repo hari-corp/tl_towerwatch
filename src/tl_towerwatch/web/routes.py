@@ -176,14 +176,14 @@ def settings_page(request: Request):
 
 @router.post("/settings/auth/save")
 def settings_auth_save(github_token: str = Form(""),
-                       oauth_client_id: str = Form(""),
-                       oauth_client_secret: str = Form("")):
+                       github_oauth_client_id: str = Form(""),
+                       github_oauth_client_secret: str = Form("")):
     settings = load_settings()
     _persist_auth_keys(
         settings.data_dir / ".env",
         github_token=github_token,
-        oauth_client_id=oauth_client_id,
-        oauth_client_secret=oauth_client_secret,
+        github_oauth_client_id=github_oauth_client_id,
+        github_oauth_client_secret=github_oauth_client_secret,
     )
     return RedirectResponse("/settings", status_code=303)
 
@@ -203,24 +203,42 @@ def settings_llm_save(provider: str = Form("anthropic"),
     return RedirectResponse("/settings", status_code=303)
 
 def _persist_auth_keys(env_path: Path, github_token: str,
-                       oauth_client_id: str, oauth_client_secret: str) -> None:
+                       github_oauth_client_id: str,
+                       github_oauth_client_secret: str) -> None:
     """Persist Auth-form values to .env, only touching the Auth keys.
 
-    Replaces any existing lines for the keys this helper owns so a stale value
-    can't leak through, but never strips keys owned by other helpers.
+    Empty form values are treated as "no change" so submitting a partial Auth
+    form (e.g. only the PAT) cannot wipe secrets the user didn't intend to
+    touch — see `test_settings_auth_save_does_not_wipe_oauth_fields`. Non-empty
+    form values replace any existing line for that key. Keys owned by other
+    helpers are never touched.
 
     Key names align with spec §10.3: ``TOWERWATCH_GITHUB_OAUTH_*``.
     """
     import os
     updates = {
         "TOWERWATCH_GITHUB_TOKEN": github_token,
-        "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID": oauth_client_id,
-        "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET": oauth_client_secret,
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID": github_oauth_client_id,
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET": github_oauth_client_secret,
     }
     keys = set(updates.keys())
     lines = env_path.read_text().splitlines() if env_path.exists() else []
+    # Snapshot existing values for the keys this helper owns so we can
+    # preserve them when the corresponding form field arrives empty.
+    existing = {}
+    for ln in lines:
+        for k in keys:
+            if ln.startswith(k + "="):
+                existing[k] = ln[len(k) + 1:]
+                break
+    # Drop any line this helper owns; we'll re-emit them below.
     new_lines = [ln for ln in lines if not any(ln.startswith(k + "=") for k in keys)]
-    new_lines += [f"{k}={v}" for k, v in updates.items() if v]
+    for k, v in updates.items():
+        if v:
+            new_lines.append(f"{k}={v}")
+        elif k in existing:
+            # Empty form value → keep the prior secret untouched.
+            new_lines.append(f"{k}={existing[k]}")
     tmp = env_path.with_suffix(env_path.suffix + ".tmp")
     tmp.write_text("\n".join(new_lines) + "\n")
     os.replace(tmp, env_path)

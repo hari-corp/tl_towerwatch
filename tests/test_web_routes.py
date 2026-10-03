@@ -75,12 +75,35 @@ def test_settings_auth_save_persists_pat(tmp_path, monkeypatch):
     with TestClient(app) as c:
         r = c.post("/settings/auth/save",
                    data={"github_token": "ghp_FAKE",
-                         "oauth_client_id": "",
-                         "oauth_client_secret": ""},
+                         "github_oauth_client_id": "",
+                         "github_oauth_client_secret": ""},
                    follow_redirects=False)
         assert r.status_code == 303
     env_text = (tmp_path / ".env").read_text()
     assert "TOWERWATCH_GITHUB_TOKEN=ghp_FAKE" in env_text
+
+def test_settings_auth_save_does_not_wipe_oauth_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID=cid_real\n"
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET=csec_real\n"
+    )
+    from tl_towerwatch.web import create_app
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/settings/auth/save",
+                   data={"github_token": "ghp_new",
+                         "github_oauth_client_id": "",
+                         "github_oauth_client_secret": ""},
+                   follow_redirects=False)
+        assert r.status_code == 303
+    env_text = env_path.read_text()
+    assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID=cid_real" in env_text
+    assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET=csec_real" in env_text
+    assert "TOWERWATCH_GITHUB_TOKEN=ghp_new" in env_text
 
 def test_settings_llm_save_does_not_wipe_auth_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
