@@ -1,0 +1,15 @@
+services:
+  tl_towerwatch:
+    build: .
+    image: tl_towerwatch:latest
+    container_name: tl_towerwatch
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      TOWERWATCH_DATA_DIR: /data
+      TOWERWATCH_HOST_ALIAS: host.docker.internal
+    volumes:
+      - ~/tl_towerwatch-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
