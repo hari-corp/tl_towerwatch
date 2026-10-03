@@ -76,6 +76,37 @@ def test_sync_repo_applies_allowed_authors(tmp_path: Path):
 
 
 @respx.mock
+def test_sync_repo_persists_last_fetch_metadata(tmp_path: Path):
+    """Regression: `sync_repo` must persist `last_fetched_at` / `last_fetch_status`
+    / `last_fetch_error` on the Repo row even when the caller passes a detached
+    instance (e.g. one returned by an earlier `list_repos(db)` call in a
+    previous session).
+    """
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    respx.get("https://api.github.com/repos/o/n/pulls",
+              params={"state": "open", "per_page": 100, "page": 1}).mock(
+        return_value=Response(200, json=[
+            {"number": 1, "title": "a", "body": None, "user": {"login": "marta.g"},
+             "state": "open", "draft": False, "head": {"sha": "s1"}, "base": {"ref": "main"},
+             "html_url": "u", "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-01-01T00:00:00Z", "requested_reviewers": []},
+        ])
+    )
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    repo_row = list_repos(db)[0]
+    with GitHubClient(token="x") as gh:
+        n = sync_repo(db, gh, repo_row)
+    assert n == 1
+    # Fresh session: re-read the repo and verify fetch metadata was committed.
+    fresh = list_repos(db)[0]
+    assert fresh.last_fetched_at is not None
+    assert fresh.last_fetch_status == "ok"
+    assert fresh.last_fetch_error is None
+
+
+@respx.mock
 def test_sync_one_pr_upserts_and_refreshes(tmp_path: Path):
     db = _setup(tmp_path)
     add_repo(db, "o", "n")

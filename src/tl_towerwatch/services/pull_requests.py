@@ -96,9 +96,14 @@ def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
             s.flush()
             _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, pr.number)
             count += 1
-        repo.last_fetched_at = now_iso()
-        repo.last_fetch_status = "ok"
-        repo.last_fetch_error = None
+        # Re-fetch the repo row in the current session before mutating: callers
+        # typically pass a Repo loaded by an earlier `list_repos(db)` call, so
+        # the instance is detached and field assignments would be dropped on
+        # commit.
+        fresh = s.get(Repo, repo.id)
+        fresh.last_fetched_at = now_iso()
+        fresh.last_fetch_status = "ok"
+        fresh.last_fetch_error = None
     return count
 
 
@@ -130,13 +135,13 @@ def list_prs_for_dashboard(
     scope_filter: str,
     allowed_authors_filter: list[str] | None = None,
 ) -> list[PullRequest]:
-    """Return PRs visible on the dashboard given the current filters."""
+    """Return PRs visible on the dashboard given the current filters.
+
+    Filter order follows spec §12: `scope_filter` is applied first, then
+    `allowed_authors_filter`.
+    """
     with db.session() as s:
         rows: list[PullRequest] = list(s.execute(select(PullRequest)).scalars())
-
-        if allowed_authors_filter:
-            allowed = set(normalize_authors(allowed_authors_filter))
-            rows = [p for p in rows if (p.author_login or "").lower() in allowed]
 
         if scope_filter == "mine":
             rows = [p for p in rows if p.author_login == login]
@@ -161,6 +166,10 @@ def list_prs_for_dashboard(
                 if p.author_login == login or p.id in reviewer_pr_ids
             ]
         # "all" or unknown -> no extra filter
+
+        if allowed_authors_filter:
+            allowed = set(normalize_authors(allowed_authors_filter))
+            rows = [p for p in rows if (p.author_login or "").lower() in allowed]
 
         rows.sort(key=lambda p: p.updated_at, reverse=True)
         return rows
