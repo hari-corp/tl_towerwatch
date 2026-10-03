@@ -28,9 +28,16 @@ class GitHubClient:
             timeout=30.0,
         )
         self._last_rate_limit: RateLimit | None = None
+        self._oauth_scopes: list[str] | None = None
 
     def last_rate_limit(self) -> RateLimit | None:
         return self._last_rate_limit
+
+    def last_oauth_scopes(self) -> list[str] | None:
+        """Return the OAuth scopes from the most recent response's
+        ``X-OAuth-Scopes`` header, or ``None`` if not yet observed.
+        """
+        return self._oauth_scopes
 
     def close(self) -> None:
         self._client.close()
@@ -47,8 +54,14 @@ class GitHubClient:
         if rem is not None and reset is not None:
             self._last_rate_limit = RateLimit(remaining=int(rem), reset=int(reset))
 
+    def _capture_oauth_scopes(self, r: httpx.Response) -> None:
+        scopes = r.headers.get("X-OAuth-Scopes")
+        if scopes is not None:
+            self._oauth_scopes = [s.strip() for s in scopes.split(",") if s.strip()]
+
     def _check(self, r: httpx.Response) -> dict[str, Any]:
         self._capture_rate_limit(r)
+        self._capture_oauth_scopes(r)
         r.raise_for_status()
         return r.json()
 
