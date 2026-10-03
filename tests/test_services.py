@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 import respx
 from httpx import Response
 
@@ -300,3 +301,45 @@ def test_run_review_end_to_end(tmp_path, monkeypatch, fake_claude):
         run_row = s.query(ReviewRun).order_by(ReviewRun.id.desc()).first()
         assert run_row.status == "done"
         assert s.query(ReviewFinding).filter_by(review_run_id=run_row.id).count() == 1
+
+
+@respx.mock
+def test_run_review_marks_failed_when_runner_raises(tmp_path, monkeypatch):
+    """Regression: spec §9 requires every ReviewRun to reach a terminal state.
+    If the agent call (or its supporting GitHub fetch) raises, the row must be
+    flipped to status="failed" with the exception captured in `error` and
+    `finished_at` set, and the exception must still propagate to the caller.
+    """
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number":1,"title":"t","body":"b","user":{"login":"a"},"state":"open",
+                   "draft":False,"head":{"sha":"s1"},"base":{"ref":"main"},
+                   "html_url":"u","created_at":"2026-01-01T00:00:00Z",
+                   "updated_at":"2026-01-01T00:00:00Z","requested_reviewers":[]}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[
+        {"filename":"a.py","additions":1,"deletions":0,"status":"added","patch":"+ x\n"}]))
+
+    class _BoomRunner:
+        name = "boom"
+        def run_review(self, **_kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "tl_towerwatch.services.review_runner.get_runner",
+        lambda _name, _settings: _BoomRunner(),
+    )
+
+    settings = load_settings(tmp_path)
+    with GitHubClient(token="x") as gh, pytest.raises(RuntimeError, match="boom"):
+        run_review(db, gh, owner="o", name="n", number=1,
+                   agent_name="claude", skill_names=["superpowers"],
+                   mode="fresh", timeout_seconds=10, settings=settings)
+
+    with db.session() as s:
+        run_row = s.query(ReviewRun).order_by(ReviewRun.id.desc()).first()
+        assert run_row.status == "failed"
+        assert "boom" in run_row.error
+        assert run_row.finished_at is not None

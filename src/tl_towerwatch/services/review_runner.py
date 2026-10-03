@@ -69,22 +69,33 @@ def run_review(
         if sk.name in skill_names and sk.enabled
     ]
     runner = get_runner(agent_name, settings)
-    res = runner.run_review(
-        pr_diff=_diff_text(gh, owner, name, number),
-        pr_metadata={
-            "title": pr.title,
-            "body": pr.body,
-            "author": pr.author_login,
-            "number": pr.number,
-            "repo": f"{owner}/{name}",
-            "head_sha": pr.head_sha,
-        },
-        skills=skills,
-        prompt_template=DEFAULT_TEMPLATE,
-        mode=mode,
-        previous_findings=_prior_findings_payload_dict(db, pr.id),
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        res = runner.run_review(
+            pr_diff=_diff_text(gh, owner, name, number),
+            pr_metadata={
+                "title": pr.title,
+                "body": pr.body,
+                "author": pr.author_login,
+                "number": pr.number,
+                "repo": f"{owner}/{name}",
+                "head_sha": pr.head_sha,
+            },
+            skills=skills,
+            prompt_template=DEFAULT_TEMPLATE,
+            mode=mode,
+            previous_findings=_prior_findings_payload_dict(db, pr.id),
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        # Spec §9 requires every run to reach a terminal state. If the agent
+        # call (or its supporting GitHub fetch) raises, mark the run failed and
+        # re-raise so the caller can react.
+        with db.session() as s:
+            run = s.get(ReviewRun, run_id)
+            run.status = "failed"
+            run.error = repr(exc)
+            run.finished_at = now_iso()
+        raise
 
     with db.session() as s:
         run = s.get(ReviewRun, run_id)
