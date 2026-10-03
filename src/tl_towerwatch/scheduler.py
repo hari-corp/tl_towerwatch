@@ -1,13 +1,18 @@
 from __future__ import annotations
-import threading, time
-from datetime import datetime, timezone
-from tl_towerwatch.config import Settings
-from tl_towerwatch.db.database import engine_from_settings
-from tl_towerwatch.github.client import GitHubClient
+
+import threading
+import time
+from datetime import datetime, timezone  # noqa: F401 — deferred to final review
+
 from tl_towerwatch.auth.github import resolve_token
-from tl_towerwatch.services.repos import list_repos
-from tl_towerwatch.services.pull_requests import sync_repo
+from tl_towerwatch.config import Settings
+from tl_towerwatch.db.database import Database, engine_from_settings
+from tl_towerwatch.db.models import Repo
+from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.llm import get_provider
+from tl_towerwatch.services.pull_requests import sync_repo
+from tl_towerwatch.services.repos import list_repos
+
 
 class RefreshScheduler:
     def __init__(self, settings: Settings) -> None:
@@ -30,16 +35,35 @@ class RefreshScheduler:
         llm = get_provider(self._settings)
         last_run: dict[int, float] = {}
         while not self._stop.wait(15):
-            for repo in list_repos(db, enabled_only=True):
-                interval = repo.refresh_interval_seconds
-                now = time.time()
-                if now - last_run.get(repo.id, 0) < interval:
-                    continue
-                try:
-                    sync_repo(db, gh, repo)
-                except Exception as e:
-                    with db.session() as s:
-                        r = next(r for r in list_repos(db) if r.id == repo.id)
-                        r.last_fetch_status = "error"
-                        r.last_fetch_error = str(e)
-                last_run[repo.id] = now
+            self._tick(db, gh, llm, last_run)
+
+    def _tick(
+        self,
+        db: Database,
+        gh: GitHubClient,
+        llm,
+        last_run: dict[int, float],
+    ) -> None:
+        """Run one iteration of the refresh loop: for each enabled repo whose
+        ``refresh_interval_seconds`` has elapsed since its last run, call
+        ``sync_repo``. Errors are caught and persisted as
+        ``last_fetch_status="error"`` on the Repo row.
+
+        Exposed as a method (rather than inlined in ``_loop``) so tests can
+        drive a single iteration without sleeping for the 15-second tick.
+        """
+        for repo in list_repos(db, enabled_only=True):
+            interval = repo.refresh_interval_seconds
+            now = time.time()
+            if now - last_run.get(repo.id, 0) < interval:
+                continue
+            try:
+                sync_repo(db, gh, repo, llm=llm)
+            except Exception as e:  # noqa: BLE001 — top-level refresh error handler
+                with db.session() as s:
+                    r = s.get(Repo, repo.id)
+                    if r is None:
+                        continue
+                    r.last_fetch_status = "error"
+                    r.last_fetch_error = str(e)
+            last_run[repo.id] = now
