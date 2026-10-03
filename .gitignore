@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# tl_towerwatch local data & config
+data/
+.superpowers/
+
+# IDE
+.idea/
+.vscode/
