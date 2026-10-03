@@ -952,12 +952,12 @@ def test_add_and_list_repo(tmp_path: Path):
 def test_set_allowed_authors_normalizes(tmp_path: Path):
     db = _setup(tmp_path)
     add_repo(db, "o", "n")
-    set_allowed_authors(db, "o", "n", ["MartaG", "luis.f", "martaG"])
+    set_allowed_authors(db, "o", "n", ["Marta.G", "luis.f", "marta.g"])
     r = list_repos(db)[0]
-    assert json.loads(r.allowed_authors_json) == ["marta.g", "luis.f"]
+    assert json.loads(r.allowed_authors_json) == ["luis.f", "marta.g"]
 
 def test_normalize_authors_dedupes():
-    assert normalize_authors(["MartaG", "marta.g", " luis.f "]) == ["luis.f", "marta.g"]
+    assert normalize_authors(["Marta.G", "marta.g", " luis.f "]) == ["luis.f", "marta.g"]
 ```
 
 - [ ] **Step 2: Run test, expect FAIL**
@@ -1405,7 +1405,8 @@ def test_sync_repo_applies_allowed_authors(tmp_path):
     with GitHubClient(token="x") as gh:
         n = sync_repo(db, gh, list_repos(db)[0])
     assert n == 2  # both fetched
-    prs = list_prs_for_dashboard(db, login="dimh", scope_filter="all")
+    prs = list_prs_for_dashboard(db, login="dimh", scope_filter="all",
+                                  allowed_authors_filter=["marta.g"])
     assert len(prs) == 1
     assert prs[0].number == 1
 ```
@@ -1973,7 +1974,7 @@ def test_dashboard_renders_empty(tmp_path, monkeypatch):
     with TestClient(app) as c:
         r = c.get("/")
         assert r.status_code == 200
-        assert "Atención" in r.text or "no PRs" in r.text.lower() or "Mis PRs" in r.text
+        assert "PRs" in r.text
 ```
 
 - [ ] **Step 2: Run test, expect FAIL**
@@ -2365,7 +2366,35 @@ git commit -m "feat(skills): registry + review prompt template"
   - `class AgentRunner` Protocol with `name`, `run_review(...) -> ReviewResult`.
   - Factory `agents.get_runner(name: str, settings) -> AgentRunner`.
 
-- [ ] **Step 1: Write failing test `tests/test_agent_runners.py`** using a fake `claude` binary:
+- [ ] **Step 1: Add `fake_claude` fixture to `tests/conftest.py`**
+
+Add to `tests/conftest.py`:
+```python
+import os, stat, textwrap
+import pytest
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """Create a fake `claude` binary in tmp_path that emits one finding."""
+    bin_path = tmp_path / "claude"
+    bin_path.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys, json
+        print("reasoning ...", flush=True)
+        print("<!-- TLTW:FINDINGS -->")
+        print(json.dumps([
+            {"severity":"high","file_path":"a.py","line":3,
+             "description":"missing null check",
+             "finding_key":"a.py:3:missing-null-check"}
+        ]))
+        print("<!-- TLTW:DONE -->")
+    """))
+    bin_path.chmod(bin_path.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    return bin_path
+```
+
+- [ ] **Step 2: Write failing test `tests/test_agent_runners.py`** using the shared fixture:
 
 ```python
 import os, stat, textwrap, json, pytest
@@ -2841,8 +2870,6 @@ def run_review(
     agent_name: str, skill_names: list[str], mode: str,
     timeout_seconds: int, settings: Settings,
 ) -> ReviewRun:
-    repo = db.session().__class__  # placeholder; replaced below
-    # Resolve repo row
     with db.session() as s:
         repo_row = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
         pr = sync_one_pr(db, gh, repo_row, number, llm=None)
