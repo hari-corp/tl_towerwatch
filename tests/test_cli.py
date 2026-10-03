@@ -15,3 +15,8 @@ def test_repo_list_empty(tmp_path: Path, monkeypatch):
     result = runner.invoke(app, ["repo", "list"])
     assert result.exit_code == 0
     assert "no repos" in result.stdout.lower() or "0" in result.stdout
+
+def test_serve_help():
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "port" in result.stdout

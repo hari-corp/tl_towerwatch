@@ -103,3 +103,10 @@ def repo_set_authors(
     owner, name = owner_name.split("/", 1)
     set_allowed_authors(db, owner, name, [a for a in authors.split(",") if a.strip()])
     typer.echo(f"✓ Updated allowed_authors for {owner}/{name}")
+
+@app.command()
+def serve(host: str = typer.Option("127.0.0.1"), port: int = typer.Option(8000)):
+    """Start the FastAPI dashboard."""
+    import uvicorn
+    uvicorn.run("tl_towerwatch.web:create_app", host=host, port=port,
+                factory=True, reload=False)
