@@ -7,6 +7,7 @@ from httpx import Response
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.github.client import GitHubClient
+from tl_towerwatch.llm.base import LLMProvider
 from tl_towerwatch.services.pull_requests import (
     get_pr_with_details,
     list_prs_for_dashboard,
@@ -241,3 +242,33 @@ def test_badge_changes_requested(tmp_path):
     names = [b["name"] for b in badges]
     assert "changes_requested" in names
     assert "pending_response" in names
+
+
+class FakeLLM(LLMProvider):
+    name = "fake"
+    def __init__(self):
+        self.calls = 0
+    def summarize(self, *, title, body, diff, metadata) -> str:
+        self.calls += 1
+        return f"SUMMARY({title})"
+    def health_check(self) -> bool: return True
+
+
+@respx.mock
+def test_sync_regenerates_summary_on_head_change(tmp_path):
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number":1, "title":"t","body":"b","user":{"login":"a"},
+                  "state":"open","draft":False,"head":{"sha":"s1"},"base":{"ref":"main"},
+                  "html_url":"u","created_at":"2026-01-01T00:00:00Z",
+                  "updated_at":"2026-01-01T00:00:00Z","requested_reviewers":[]}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
+    repo = list_repos(db)[0]
+    llm = FakeLLM()
+    with GitHubClient(token="x") as gh:
+        sync_one_pr(db, gh, repo, 1, llm=llm)
+        sync_one_pr(db, gh, repo, 1, llm=llm)
+    assert llm.calls == 1

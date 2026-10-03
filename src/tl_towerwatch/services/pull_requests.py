@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from tl_towerwatch.db.database import Database
 from tl_towerwatch.db.models import (
+    PRSummary,
     PullRequest,
     Repo,
     Review,
@@ -13,6 +14,7 @@ from tl_towerwatch.db.models import (
     now_iso,
 )
 from tl_towerwatch.github.client import GitHubClient
+from tl_towerwatch.llm.base import LLMProvider
 from tl_towerwatch.services.repos import normalize_authors
 
 
@@ -88,13 +90,67 @@ def _replace_reviews_and_comments(
         )
 
 
-def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
+def _summarize_diff(files, *, max_files: int = 30, max_chars: int = 20000) -> str:
+    """Concatenate file patches up to a budget so the LLM sees the salient diff."""
+    return "\n".join((f.patch or "") for f in files[:max_files])[:max_chars]
+
+
+def _maybe_summarize(
+    s: Session,
+    row: PullRequest,
+    *,
+    llm: LLMProvider | None,
+    diff_text: str,
+    repo_label: str,
+) -> None:
+    """Generate / refresh a PRSummary when `llm` is provided and the head SHA
+    changed (or no summary exists yet).
+    """
+    if llm is None:
+        return
+    existing_summary = s.get(PRSummary, row.id)
+    if existing_summary is not None and existing_summary.head_sha == row.head_sha:
+        return
+    text = llm.summarize(
+        title=row.title,
+        body=row.body,
+        diff=diff_text,
+        metadata={"number": row.number, "repo": repo_label},
+    )
+    if existing_summary is None:
+        s.add(
+            PRSummary(
+                pr_id=row.id,
+                summary=text,
+                head_sha=row.head_sha,
+                model=llm.name,
+                generated_at=now_iso(),
+            )
+        )
+    else:
+        existing_summary.summary = text
+        existing_summary.head_sha = row.head_sha
+        existing_summary.model = llm.name
+        existing_summary.generated_at = now_iso()
+
+
+def sync_repo(
+    db: Database, gh: GitHubClient, repo: Repo, *, llm: LLMProvider | None = None
+) -> int:
     count = 0
+    repo_label = f"{repo.owner}/{repo.name}"
     with db.session() as s:
         for pr in gh.list_open_prs(repo.owner, repo.name):
             row = _upsert_pr(s, repo.id, pr)
             s.flush()
             _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, pr.number)
+            if llm is not None:
+                files = gh.list_pr_files(repo.owner, repo.name, pr.number)
+                _maybe_summarize(
+                    s, row, llm=llm,
+                    diff_text=_summarize_diff(files),
+                    repo_label=repo_label,
+                )
             count += 1
         # Re-fetch the repo row in the current session before mutating: callers
         # typically pass a Repo loaded by an earlier `list_repos(db)` call, so
@@ -108,12 +164,25 @@ def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
 
 
 def sync_one_pr(
-    db: Database, gh: GitHubClient, repo: Repo, number: int
+    db: Database,
+    gh: GitHubClient,
+    repo: Repo,
+    number: int,
+    *,
+    llm: LLMProvider | None = None,
 ) -> PullRequest:
+    diff_text = ""
+    if llm is not None:
+        diff_text = _summarize_diff(gh.list_pr_files(repo.owner, repo.name, number))
     with db.session() as s:
         pr = gh.get_pr(repo.owner, repo.name, number)
         row = _upsert_pr(s, repo.id, pr)
         _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, number)
+        _maybe_summarize(
+            s, row, llm=llm,
+            diff_text=diff_text,
+            repo_label=f"{repo.owner}/{repo.name}",
+        )
         return row
 
 
