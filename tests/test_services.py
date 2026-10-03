@@ -19,6 +19,7 @@ from tl_towerwatch.services.repos import (
     normalize_authors,
     set_allowed_authors,
 )
+from tl_towerwatch.services.reviews import compute_badges
 
 
 def _setup(tmp_path: Path):
@@ -203,3 +204,40 @@ def test_list_prs_for_dashboard_scopes(tmp_path: Path):
     # sort by updated_at desc
     sorted_prs = list_prs_for_dashboard(db, login="dimh", scope_filter="all")
     assert sorted_prs[0].number == 2  # updated 2026-01-03
+
+
+def _insert_pr_review(tmp_path, *, login, state, body="x"):
+    from tl_towerwatch.db.models import PullRequest, Review, User, now_iso
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    r = list_repos(db)[0]
+    with db.session() as s:
+        for u_login in (login, "reviewer"):
+            if s.get(User, u_login) is None:
+                s.add(User(login=u_login))
+        s.flush()
+        pr = PullRequest(
+            repo_id=1, number=1, title="t", body=None, author_login=login,
+            state="open", draft=0, head_sha="x", base_ref="main",
+            html_url="u", created_at=now_iso(), updated_at=now_iso(),
+            cached_at=now_iso(),
+        )
+        s.add(pr)
+        s.flush()
+        if state:
+            s.add(Review(
+                pr_id=pr.id, reviewer_login="reviewer",
+                state=state, submitted_at=now_iso(), body=body,
+            ))
+    return db, r, pr
+
+
+def test_badge_changes_requested(tmp_path):
+    from tl_towerwatch.db.models import PullRequest
+    db, _, _ = _insert_pr_review(tmp_path, login="me", state="changes_requested")
+    with db.session() as s:
+        pr = s.query(PullRequest).first()
+        badges = compute_badges(db, "me", pr)
+    names = [b["name"] for b in badges]
+    assert "changes_requested" in names
+    assert "pending_response" in names
