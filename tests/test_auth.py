@@ -25,10 +25,10 @@ def test_resolve_token_pat(tmp_path: Path):
 @respx.mock
 def test_resolve_token_oauth_refresh(tmp_path: Path):
     s = load_settings(tmp_path)
-    s.oauth_access_token = "old_access"
-    s.oauth_refresh_token = "old_refresh"
-    s.oauth_client_id = "cid"
-    s.oauth_client_secret = "csec"
+    s.github_oauth_access_token = "old_access"
+    s.github_oauth_refresh_token = "old_refresh"
+    s.github_oauth_client_id = "cid"
+    s.github_oauth_client_secret = "csec"
     respx.post("https://github.com/login/oauth/access_token").mock(
         return_value=Response(
             200,
@@ -38,7 +38,7 @@ def test_resolve_token_oauth_refresh(tmp_path: Path):
     )
     new = resolve_token(s)
     assert new == "new_access"
-    assert s.oauth_refresh_token == "new_refresh"
+    assert s.github_oauth_refresh_token == "new_refresh"
 
 
 @respx.mock

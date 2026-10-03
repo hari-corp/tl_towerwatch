@@ -1,18 +1,23 @@
 from __future__ import annotations
+
 import json
-from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
-from tl_towerwatch.services.repos import (
-    add_repo, list_repos, set_repo_enabled, remove_repo, set_allowed_authors,
-)
-from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.github.client import GitHubClient
+from tl_towerwatch.services.repos import (
+    add_repo,
+    list_repos,
+    remove_repo,
+    set_allowed_authors,
+    set_repo_enabled,
+)
+from tl_towerwatch.services.review_runner import run_review
 
 app = typer.Typer(help="tl_towerwatch — local PR dashboard for tech leads")
 repo_app = typer.Typer(help="Manage watched repos")
@@ -31,7 +36,7 @@ def init():
     token = typer.prompt("GitHub PAT (will be stored in .env)", hide_input=True)
     settings.github_token = token
     (settings.data_dir / ".env").write_text(f"TOWERWATCH_GITHUB_TOKEN={token}\n")
-    typer.echo(f"✓ Saved. Next: tl_towerwatch repo add owner/name")
+    typer.echo("✓ Saved. Next: tl_towerwatch repo add owner/name")
 
 @repo_app.command("add")
 def repo_add(
@@ -108,6 +113,7 @@ def repo_set_authors(
 def serve(host: str = typer.Option("127.0.0.1"),
           port: int = typer.Option(8000)):
     import uvicorn
+
     from tl_towerwatch.scheduler import RefreshScheduler
     settings = load_settings()
     sched = RefreshScheduler(settings)
@@ -117,3 +123,38 @@ def serve(host: str = typer.Option("127.0.0.1"),
                     factory=True, reload=False)
     finally:
         sched.stop()
+
+@app.command()
+def review(
+    target: str = typer.Argument(..., help="owner/name#N (e.g. 'hari-corp/billing-svc#482')"),
+    skills: str = typer.Option("", "--skills", help="comma-separated skill names"),
+    agent: str = typer.Option("claude", "--agent", help="agent runner (claude|codex|minimax|ollama)"),
+    mode: str = typer.Option("fresh", "--mode", help="fresh|compare"),
+    watch: bool = typer.Option(False, "--watch", help="stream output to terminal (v1.1)"),
+):
+    """Run a code review on a PR headlessly (spec §9)."""
+    if "#" not in target:
+        typer.echo("target must be owner/name#N (e.g. 'hari-corp/billing-svc#482')", err=True)
+        raise typer.Exit(1)
+    owner_name, _, number = target.rpartition("#")
+    if "/" not in owner_name:
+        typer.echo("target must be owner/name#N", err=True)
+        raise typer.Exit(1)
+    owner, _, name = owner_name.partition("/")
+    skill_names = [s.strip() for s in skills.split(",") if s.strip()]
+    settings = load_settings()
+    db = _db()
+    db.create_all()
+    from tl_towerwatch.auth.github import resolve_token
+    from tl_towerwatch.github.client import GitHubClient
+    with GitHubClient(token=resolve_token(settings)) as gh:
+        run_review(
+            db, gh,
+            owner=owner, name=name, number=int(number),
+            agent_name=agent, skill_names=skill_names, mode=mode,
+            timeout_seconds=300, settings=settings,
+        )
+    typer.echo(f"✓ Review submitted for {owner}/{name}#{number}")
+    if watch:
+        typer.echo("(streaming mode is a v1.1 follow-up; run submitted, "
+                   "check the dashboard or `tl_towerwatch serve` for live output)")

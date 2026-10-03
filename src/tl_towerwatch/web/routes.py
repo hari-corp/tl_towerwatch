@@ -1,26 +1,37 @@
 from __future__ import annotations
+
 import json as _json
-from sqlalchemy import select
-from fastapi import APIRouter, Request, Form, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
+from fastapi import APIRouter, Form, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
+
+from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
-from tl_towerwatch.db.models import PullRequest, ReviewRun, PRSummary, Repo
-from tl_towerwatch.services.pull_requests import list_prs_for_dashboard
-from tl_towerwatch.services.reviews import compute_badges
+from tl_towerwatch.db.models import PRSummary, PullRequest, Repo, ReviewRun
+from tl_towerwatch.github.client import GitHubClient
+from tl_towerwatch.llm import get_provider
+from tl_towerwatch.services.pull_requests import list_prs_for_dashboard, sync_one_pr
 from tl_towerwatch.services.repos import (
-    list_repos as svc_list_repos, add_repo as svc_add_repo,
-    set_repo_enabled as svc_set_repo_enabled, remove_repo as svc_remove_repo,
+    add_repo as svc_add_repo,
+)
+from tl_towerwatch.services.repos import (
+    list_repos as svc_list_repos,
+)
+from tl_towerwatch.services.repos import (
+    remove_repo as svc_remove_repo,
+)
+from tl_towerwatch.services.repos import (
     set_allowed_authors as svc_set_allowed_authors,
 )
+from tl_towerwatch.services.repos import (
+    set_repo_enabled as svc_set_repo_enabled,
+)
 from tl_towerwatch.services.review_runner import run_review
-from tl_towerwatch.services.pull_requests import sync_one_pr
-from tl_towerwatch.llm import get_provider
-from tl_towerwatch.github.client import GitHubClient
-from tl_towerwatch.auth.github import resolve_token
+from tl_towerwatch.services.reviews import compute_badges
 
 _TPL_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TPL_DIR))
@@ -197,12 +208,14 @@ def _persist_auth_keys(env_path: Path, github_token: str,
 
     Replaces any existing lines for the keys this helper owns so a stale value
     can't leak through, but never strips keys owned by other helpers.
+
+    Key names align with spec §10.3: ``TOWERWATCH_GITHUB_OAUTH_*``.
     """
     import os
     updates = {
         "TOWERWATCH_GITHUB_TOKEN": github_token,
-        "TOWERWATCH_OAUTH_CLIENT_ID": oauth_client_id,
-        "TOWERWATCH_OAUTH_CLIENT_SECRET": oauth_client_secret,
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID": oauth_client_id,
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET": oauth_client_secret,
     }
     keys = set(updates.keys())
     lines = env_path.read_text().splitlines() if env_path.exists() else []

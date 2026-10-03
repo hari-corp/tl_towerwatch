@@ -31,6 +31,10 @@ Everything lives in `~/tl_towerwatch-data/`:
 - `config.yaml` — skills registry, per-repo overrides
 - `tl_towerwatch.db` — SQLite cache
 
+`tl_towerwatch init` is a PAT-only bootstrap. For the full setup (OAuth
+client credentials, LLM provider switching, custom Ollama URL) open the
+**Settings** page at `http://localhost:8000/settings` after `serve`.
+
 See `docs/superpowers/specs/2026-10-03-tl-towerwatch-design.md` for the
 full design and `docs/superpowers/plans/2026-10-03-tl-towerwatch.md` for
 the implementation plan.

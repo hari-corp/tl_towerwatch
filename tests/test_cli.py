@@ -1,5 +1,7 @@
-from typer.testing import CliRunner
 from pathlib import Path
+
+from typer.testing import CliRunner
+
 from tl_towerwatch.cli import app
 
 runner = CliRunner()
@@ -20,3 +22,12 @@ def test_serve_help():
     result = runner.invoke(app, ["serve", "--help"])
     assert result.exit_code == 0
     assert "port" in result.stdout
+
+def test_review_help():
+    """The `review` CLI command must exist with the spec §9 options."""
+    result = runner.invoke(app, ["review", "--help"])
+    assert result.exit_code == 0
+    assert "--agent" in result.stdout
+    assert "--skills" in result.stdout
+    assert "--mode" in result.stdout
+    assert "--watch" in result.stdout

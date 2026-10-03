@@ -22,8 +22,8 @@ def resolve_token(settings: Settings) -> str:
     """
     if settings.github_token:
         return _validate_pat(settings)
-    if settings.oauth_access_token and settings.oauth_refresh_token:
-        return refresh_oauth_token(settings).oauth_access_token
+    if settings.github_oauth_access_token and settings.github_oauth_refresh_token:
+        return refresh_oauth_token(settings).github_oauth_access_token
     raise RuntimeError("No GitHub credentials configured. Run `tl_towerwatch init`.")
 
 
@@ -48,39 +48,42 @@ def _validate_pat(settings: Settings) -> str:
 def refresh_oauth_token(settings: Settings) -> Settings:
     """Exchange the OAuth refresh token for a new access token.
 
-    Mutates ``settings`` in place (updates ``oauth_access_token`` and
-    optionally ``oauth_refresh_token``), persists the new tokens to
-    ``settings.data_dir / .env``, and returns the same ``Settings``
-    instance so callers can read the updated values.
+    Mutates ``settings`` in place (updates ``github_oauth_access_token`` and
+    optionally ``github_oauth_refresh_token``), persists the new tokens to
+    ``settings.data_dir / .env``, and returns the same ``Settings`` instance
+    so callers can read the updated values.
     """
     r = httpx.post(
         GITHUB_OAUTH_URL,
         data={
-            "client_id": settings.oauth_client_id,
-            "client_secret": settings.oauth_client_secret,
+            "client_id": settings.github_oauth_client_id,
+            "client_secret": settings.github_oauth_client_secret,
             "grant_type": "refresh_token",
-            "refresh_token": settings.oauth_refresh_token,
+            "refresh_token": settings.github_oauth_refresh_token,
         },
         headers={"Accept": "application/json"},
         timeout=30.0,
     )
     r.raise_for_status()
     data = r.json()
-    settings.oauth_access_token = data["access_token"]
+    settings.github_oauth_access_token = data["access_token"]
     if "refresh_token" in data:
-        settings.oauth_refresh_token = data["refresh_token"]
+        settings.github_oauth_refresh_token = data["refresh_token"]
     _persist_env(settings)
     return settings
 
 
 def _persist_env(settings: Settings) -> None:
-    """Append updated OAuth tokens to data_dir/.env (atomic write)."""
+    """Append updated OAuth tokens to data_dir/.env (atomic write).
+
+    Key names align with spec §10.3: ``TOWERWATCH_GITHUB_OAUTH_*``.
+    """
     import os
 
     env_path = settings.data_dir / ".env"
     updates = {
-        "TOWERWATCH_OAUTH_ACCESS_TOKEN": settings.oauth_access_token,
-        "TOWERWATCH_OAUTH_REFRESH_TOKEN": settings.oauth_refresh_token,
+        "TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN": settings.github_oauth_access_token,
+        "TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN": settings.github_oauth_refresh_token,
     }
     lines: list[str] = []
     if env_path.exists():
