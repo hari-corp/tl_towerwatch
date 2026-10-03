@@ -100,10 +100,10 @@ tl_towerwatch/
 │   │   └── models.py             # ORM models
 │   ├── services/
 │   │   ├── __init__.py
-│   │   ├── pull_requests.py      # fetch + cache + summarize
+│   │   ├── pull_requests.py      # fetch + cache + summarize (filters by allowed_authors)
 │   │   ├── reviews.py            # compute review states
 │   │   ├── findings.py           # finding lifecycle (resolve/pend/new)
-│   │   ├── repos.py              # manage repo config
+│   │   ├── repos.py              # manage repo config (incl. allowed_authors)
 │   │   └── review_runner.py      # orchestrate agent reviews
 │   └── web/
 │       ├── __init__.py
@@ -133,9 +133,12 @@ tl_towerwatch/
    - Ask auth mode (PAT or OAuth); store credentials.
    - Ask LLM provider; store API key + model default.
    - Ask about the skills registry; default to `superpowers` + `ponytail`.
-2. **Repo onboarding** — `tl_towerwatch repo add owner/name`:
+2. **Repo onboarding** — `tl_towerwatch repo add owner/name [--authors a,b,c]`:
    - Validate the user can read the repo with the current token.
-   - Insert row in `repos` table; trigger initial fetch in background.
+   - Insert row in `repos` table; optional `--authors` flag sets an
+     allowlist of GitHub logins to limit which PRs from that repo are shown
+     (see §11.1).
+   - Trigger initial fetch in background.
 3. **Serve** — `tl_towerwatch serve [--port 8000]`:
    - Start FastAPI on `localhost:<port>`.
    - Background scheduler refreshes each enabled repo every N minutes
@@ -156,9 +159,14 @@ tl_towerwatch/
 tl_towerwatch init                       # first-time setup wizard
 tl_towerwatch serve [--port 8000]        # start FastAPI dashboard
 tl_towerwatch repo add <owner>/<name>    # validate + register repo
+       [--authors a,b,c]                   # allowlist of GitHub logins (optional)
 tl_towerwatch repo remove <owner>/<name>
 tl_towerwatch repo list
 tl_towerwatch repo enable|disable <owner>/<name>
+tl_towerwatch repo set-authors <owner>/<name> --authors a,b,c  # set/replace
+tl_towerwatch repo add-author <owner>/<name> <login>            # add one
+tl_towerwatch repo remove-author <owner>/<name> <login>         # remove one
+tl_towerwatch repo clear-authors <owner>/<name>                # drop filter
 tl_towerwatch refresh [--repo owner/name]#N | --all
 tl_towerwatch review <owner>/<name>#N    # run review headless
        [--skills superpowers,ponytail]
@@ -230,11 +238,21 @@ toggle is persisted in localStorage and `config.yaml`.
 - Filters: Todos · Activos · Pausados · Con error.
 - Per-repo card:
   - Name, badges (`● ACTIVO`, `⏸ PAUSADO`, `⭐ SELF`), open PR count, last fetch time.
-  - Repo config summary: refresh interval, scope, default LLM.
+  - Repo config summary: refresh interval, scope, default LLM, allowed authors.
   - Actions: `▶ Refrescar ahora`, `⚙ config`, `⏸ pausar`/`▶ Activar`, `🗑 quitar`.
 - Bulk action bar: `⏸ Pausar todos` · `▶ Refrescar todos ahora`.
-- Per-repo `⚙ config` opens an inline panel for refresh interval, scope override,
-  and LLM override (advanced; defaults come from Settings).
+- Per-repo `⚙ config` opens an inline panel with three sections:
+  - **Refresh & scope**: interval, scope override, LLM override.
+  - **Allowed authors** (`👥 autores`): a chip input where the user types a
+    GitHub login, presses Enter or `+`, and a chip is added; each chip has an
+    `×` to remove it. When the list is empty, the repo shows PRs from all
+    authors; when non-empty, only PRs whose `author_login` matches one of
+    the logins are kept (see §11.1). The current login is auto-suggested via
+    GitHub's collaborator list for the repo if the user has read access.
+  - **Danger zone**: remove repo, etc.
+- On the dashboard, the **Creator** filter dropdown (§5.1) merges the
+  union of `allowed_authors` across all enabled repos so the user only sees
+  authors they have actually configured.
 
 ### 5.4 Settings (`/settings`)
 Sub-tabs in v1 (only the first one has a detailed mockup; the others are
@@ -266,6 +284,7 @@ CREATE TABLE repos (
   refresh_interval_seconds INTEGER NOT NULL DEFAULT 300,
   scope TEXT NOT NULL DEFAULT 'mine_and_review',  -- mine_and_review | mine | review | all
   llm_override TEXT,                              -- NULL = use global default
+  allowed_authors_json TEXT,                      -- JSON array of GitHub logins; NULL/[] = no filter
   added_at TEXT NOT NULL,
   last_fetched_at TEXT,
   last_fetch_status TEXT,                         -- ok | error | timeout
@@ -575,12 +594,47 @@ repos:
   - owner: hari-corp
     name: billing-svc
     scope: mine_and_review
+    allowed_authors: []        # default: no author filter
+  - owner: hari-corp
+    name: api-gateway
+    scope: all
+    allowed_authors:           # only show PRs from this team
+      - marta.g
+      - luis.f
+      - carlos.r
 ```
 
 Loaded via Pydantic Settings; writes happen atomically (tmp file + rename) so
 a crashed write cannot corrupt config.
 
-## 11. Error handling
+## 11. Per-repo author filtering
+
+Each repo can carry an allowlist of GitHub logins in `allowed_authors_json`.
+When the list is empty (the default), no author filter is applied. When
+non-empty, only PRs whose `author_login` is in the list are kept — applied
+**after** the `scope` filter, never before.
+
+Semantics:
+
+- `scope = mine_and_review` + `allowed_authors = []` → "my PRs + PRs where I'm
+  a requested reviewer".
+- `scope = mine_and_review` + `allowed_authors = [marta.g, luis.f]` →
+  "my PRs + PRs I'm reviewing **and** authored by me, marta, or luis".
+  In practice the user should set `scope = all` (or `mine_and_review` if
+  they want their own/review PRs to surface regardless) and let
+  `allowed_authors` carry the team definition.
+- The dashboard's **Creator** dropdown (§5.1) shows only authors present in
+  the union of all enabled repos' `allowed_authors`, so the filter options
+  match what the user actually cares about.
+- Authors are normalized to lowercase before being stored or compared, to
+  avoid `MartaG` vs `martag` mismatches.
+- The dashboard surfaces the active filter on each PR card as a subtle chip
+  (`filtrado: 3 autores`) when the repo has it set, so the user never
+  forgets they're seeing a subset.
+
+CLI commands and UI are documented in §4 and §5.3.
+
+## 12. Error handling
 
 - **GitHub API errors** — surfaced in the UI with the error message and a
   retry button. Rate-limit headers are parsed and the next allowed fetch
