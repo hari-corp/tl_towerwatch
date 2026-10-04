@@ -108,17 +108,19 @@ def _load_env_file_into_environ(env_file: Path) -> None:
 
 
 def load_settings(data_dir: Path | None = None) -> Settings:
+    # Honour the TOWERWATCH_DATA_DIR env var so web routes and the CLI
+    # share the same data dir even when load_settings() is called with
+    # no explicit argument. Otherwise default to ./data relative to CWD —
+    # this matches the wizard's write target (init writes to ./data/.env),
+    # so a fresh `tl_towerwatch init` followed by `tl_towerwatch repo add`
+    # from the same directory works without requiring the user to set
+    # TOWERWATCH_DATA_DIR.
     if data_dir is None:
-        # Honour the TOWERWATCH_DATA_DIR env var so web routes and the CLI
-        # share the same data dir even when load_settings() is called with
-        # no explicit argument.
         env_data_dir = os.environ.get("TOWERWATCH_DATA_DIR")
-        if env_data_dir:
-            data_dir = Path(env_data_dir)
-    if data_dir is not None:
-        data_dir.mkdir(parents=True, exist_ok=True)
-        (data_dir / "config.yaml").touch()
-        # Materialize env vars from <data_dir>/.env into os.environ so that
-        # Settings (which no longer declares env_file) still picks them up.
-        _load_env_file_into_environ(data_dir / ".env")
-    return Settings(data_dir=data_dir if data_dir is not None else Path("./data"))
+        data_dir = Path(env_data_dir) if env_data_dir else Path("./data")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "config.yaml").touch()
+    # Materialize env vars from <data_dir>/.env into os.environ so that
+    # Settings (which no longer declares env_file) still picks them up.
+    _load_env_file_into_environ(data_dir / ".env")
+    return Settings(data_dir=data_dir)
