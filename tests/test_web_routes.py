@@ -398,7 +398,10 @@ def test_settings_matches_mock_layout(tmp_path, monkeypatch):
 
         # --- Bottom save bar ---
         assert "Cambios se guardan autom" in body
-        assert "todo guardado" in body
+        # The saved-indicator text changed: when there's no ?ok=
+        # query param the bar shows the neutral "sin cambios
+        # pendientes" label. The success message lives behind ?ok=...
+        assert "sin cambios pendientes" in body
         assert "Restaurar defaults" in body
 
 
@@ -597,6 +600,286 @@ def test_dashboard_summarize_button_renders_per_pr(tmp_path, monkeypatch, respx_
         assert "Sin resumen generado" in r.text
         assert 'action="/pr/acme/alpha/1/summarize"' in r.text
         assert "Generar" in r.text
+
+
+def test_run_review_passes_all_skills_checkboxes(tmp_path, monkeypatch, respx_mock):
+    """Regression — the PR-detail Run-review widget renders one
+    <input type="checkbox" name="skills" value="..."> per enabled skill.
+    The browser encodes these as `skills=superpowers&skills=ponytail`
+    (multi-value). The previous route declared `skills: str = Form("")`
+    so FastAPI returned only the **last** checked value, dropping every
+    other skill from `skill_names`. After the fix the route declares
+    `skills: list[str] = Form([])` so every checked skill survives."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # Defensive cleanup of any LLM env vars leaked from prior tests.
+    for var in ("TOWERWATCH_GITHUB_TOKEN",
+                "TOWERWATCH_LLM_DEFAULT_PROVIDER",
+                "TOWERWATCH_ANTHROPIC_API_KEY",
+                "TOWERWATCH_OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / ".env").write_text(
+        "TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n"
+        "TOWERWATCH_ANTHROPIC_API_KEY=sk-test\n"
+    )
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(User(login="dimh"))
+        s.flush()
+        s.add(PullRequest(repo_id=repo.id, number=1, title="feat", body="", author_login="dimh", state="open", draft=0, head_sha="abc", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
+    # Patch run_review so we don't need to mock the full agent invocation.
+    # The route does `from tl_towerwatch.services.review_runner import
+    # run_review` so the name is bound in the routes module — patching
+    # rrunner.run_review at the source module wouldn't help. Patch the
+    # imported symbol in tl_towerwatch.web.routes instead.
+    import tl_towerwatch.web.routes as web_routes
+    captured = {}
+    def fake_run_review(*args, **kwargs):
+        captured.update(kwargs)
+    web_routes.run_review = fake_run_review
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/run-review",
+                   data={"agent": "claude",
+                         "skills": ["superpowers", "ponytail"],
+                         "mode": "fresh"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert sorted(captured["skill_names"]) == ["ponytail", "superpowers"]
+
+
+def test_settings_auth_mode_persists(tmp_path, monkeypatch, respx_mock):
+    """Regression — the settings form posts an `auth-mode` radio
+    (pat/oauth) but the previous route never declared a Form param
+    for it, so the user's radio choice was silently dropped on submit
+    and the page recomputed the mode from the saved token presence.
+    After the fix the route reads `auth-mode` and persists it to
+    config.yaml so the radio stays where the user put it across
+    reloads."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    for var in ("TOWERWATCH_GITHUB_OAUTH_CLIENT_ID",
+                "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET",
+                "TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN",
+                "TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # Submit auth-mode=oauth (even though no OAuth credentials set).
+        r = c.post("/settings/auth/save",
+                   data={"github_token": "ghp_FAKE",
+                         "github_token_edit": "",
+                         "github_oauth_client_id_edit": "",
+                         "github_oauth_client_secret_edit": "",
+                         "auth_mode": "oauth"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        cfg = (tmp_path / "config.yaml").read_text()
+        assert "auth:" in cfg
+        assert "mode: oauth" in cfg
+        # GET /settings — the radio should render OAuth as selected,
+        # not snap back to PAT.
+        r = c.get("/settings")
+        assert r.status_code == 200
+        # Both radio buttons exist; the OAuth radio has the
+        # `checked` attribute when active (mock puts the check between
+        # the <input ...> tag and the label).
+        body = r.text
+        assert 'value="oauth"' in body
+        assert 'value="pat"' in body
+        assert 'checked' in body  # at least one radio is selected
+
+
+def test_settings_anthropic_model_persists(tmp_path, monkeypatch, respx_mock):
+    """Regression — the settings LLM form posts an `anthropic_model`
+    <select>, but the previous route never declared a Form param for
+    it AND the <option> tags lacked `value=` attributes. So the
+    selection was silently dropped, and even if the route had read
+    the field it would have stored the visible label text. After the
+    fix both halves are corrected: options carry `value=` attributes
+    and the route reads + persists the model."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    for var in ("TOWERWATCH_GITHUB_TOKEN", "TOWERWATCH_ANTHROPIC_API_KEY",
+                "TOWERWATCH_OPENAI_API_KEY", "TOWERWATCH_LLM_DEFAULT_PROVIDER",
+                "TOWERWATCH_ANTHROPIC_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # Submit with haiku selected.
+        r = c.post("/settings/llm/save",
+                   data={"provider": "anthropic",
+                         "anthropic_api_key": "sk-test",
+                         "anthropic_api_key_edit": "",
+                         "openai_api_key_edit": "",
+                         "ollama_base_url_edit": "",
+                         "anthropic_model": "claude-3-5-haiku-latest"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        env = (tmp_path / ".env").read_text()
+        assert "TOWERWATCH_ANTHROPIC_MODEL=claude-3-5-haiku-latest" in env
+        # The rendered HTML now shows haiku as selected.
+        r = c.get("/settings")
+        assert r.status_code == 200
+        # The <option> tag for haiku must carry both `value=` (per the fix)
+        # and `selected` (matching the persisted state). Whitespace
+        # between the attribute close-quote and `selected` is preserved
+        # by Jinja, so use a regex that tolerates any number of spaces.
+        import re as _re
+        assert _re.search(
+            r'value="claude-3-5-haiku-latest"\s+selected>',
+            r.text,
+        ) is not None
+
+
+def test_settings_disconnect_clears_oauth(tmp_path, monkeypatch, respx_mock):
+    """POST /settings/auth/disconnect removes OAuth credentials from
+    .env (keeps the PAT untouched) and resets auth.mode to pat."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text(
+        "TOWERWATCH_GITHUB_TOKEN=ghp_KEEP\n"
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID=Iv1.drop\n"
+        "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET=gho_drop\n"
+    )
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/settings/auth/disconnect", follow_redirects=False)
+        assert r.status_code == 303
+        env = (tmp_path / ".env").read_text()
+        assert "TOWERWATCH_GITHUB_TOKEN=ghp_KEEP" in env
+        assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID" not in env
+        assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET" not in env
+
+
+def test_settings_restore_defaults_wipes_env_and_yaml(tmp_path, monkeypatch, respx_mock):
+    """POST /settings/restore-defaults wipes both .env and
+    config.yaml. The user has to confirm via a JS prompt on the
+    template — the route itself just does the wipe + redirect."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_drop\n")
+    (tmp_path / "config.yaml").write_text("auth:\n  mode: oauth\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/settings/restore-defaults", follow_redirects=False)
+        assert r.status_code == 303
+        # Files were re-touched so subsequent reads don't 404.
+        assert (tmp_path / ".env").exists()
+        assert (tmp_path / "config.yaml").exists()
+        assert "TOWERWATCH_GITHUB_TOKEN" not in (tmp_path / ".env").read_text()
+        assert "auth" not in (tmp_path / "config.yaml").read_text()
+
+
+def test_repos_pause_all_disables_every_repo(tmp_path, monkeypatch, respx_mock):
+    """POST /repos/pause-all disables every watched repo in one call."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    add_repo(db, "acme", "alpha")
+    add_repo(db, "acme", "beta")
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/repos/pause-all", follow_redirects=False)
+        assert r.status_code == 303
+        # Both repos should now be disabled.
+        from sqlalchemy import select
+        from tl_towerwatch.db.models import Repo
+        with db.session() as s:
+            repos = list(s.execute(select(Repo)).scalars())
+            assert all(r.enabled == 0 for r in repos)
+
+
+def test_summarize_without_llm_key_bounces_to_settings(tmp_path, monkeypatch, respx_mock):
+    """Regression — clicking the Generate button without an LLM key
+    configured used to return a raw JSON 400 blob. After the fix it
+    bounces to /settings?error=no_llm_key with a friendly banner so
+    the user lands on the page that actually fixes the problem."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # Defensive cleanup: a previous test in this process may have
+    # written TOWERWATCH_ANTHROPIC_API_KEY to a different tmp_path
+    # .env, which _load_env_file_into_environ() then leaked into
+    # os.environ via setdefault. Strip them so this test exercises the
+    # "no LLM key" path reliably.
+    for var in ("TOWERWATCH_GITHUB_TOKEN",
+                "TOWERWATCH_LLM_DEFAULT_PROVIDER",
+                "TOWERWATCH_ANTHROPIC_API_KEY",
+                "TOWERWATCH_ANTHROPIC_MODEL",
+                "TOWERWATCH_OPENAI_API_KEY",
+                "TOWERWATCH_OLLAMA_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / ".env").write_text(
+        "TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n"
+        # No TOWERWATCH_ANTHROPIC_API_KEY or OPENAI_API_KEY.
+    )
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(User(login="dimh"))
+        s.flush()
+        s.add(PullRequest(repo_id=repo.id, number=1, title="feat", body="", author_login="dimh", state="open", draft=0, head_sha="a", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/summarize", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"].startswith("/settings")
+        assert "error=no_llm_key" in r.headers["location"]
+        # Following the redirect lands on /settings with the friendly
+        # banner rendered.
+        r = c.get("/settings?error=no_llm_key", follow_redirects=False)
+        assert r.status_code == 200
+        assert "No hay LLM configurado" in r.text
 
 
 def test_dashboard_dropdowns_show_all_repos_and_authors(tmp_path, monkeypatch, respx_mock):

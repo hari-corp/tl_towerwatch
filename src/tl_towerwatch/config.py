@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     github_oauth_refresh_token: str = ""
     host_alias: str = "localhost"
     anthropic_api_key: str = ""
+    anthropic_model: str = "claude-3-5-sonnet-latest"
     openai_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
     theme: Literal["dark", "light", "system"] = "dark"
@@ -80,6 +81,13 @@ class Settings(BaseSettings):
             and not self.llm.ollama.base_url
         ):
             self.llm.ollama.base_url = self.ollama_base_url
+        # Mirror the Anthropic model name. The Settings UI persists it
+        # to ``TOWERWATCH_ANTHROPIC_MODEL`` (a flat env var pydantic-
+        # settings auto-binds to ``Settings.anthropic_model``) and the
+        # /settings template reads ``llm.anthropic.model`` — so we copy
+        # the value across on construction.
+        if self.anthropic_model and self.anthropic_model != self.llm.anthropic.model:
+            self.llm.anthropic.model = self.anthropic_model
         return self
 
     @property

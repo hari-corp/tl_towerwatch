@@ -413,6 +413,23 @@ def refresh_all():
             sync_repo(db, gh, repo, llm=llm)
     return RedirectResponse("/", status_code=303)
 
+
+@router.post("/repos/pause-all")
+def repos_pause_all():
+    """Bulk-disable every repo. The bulk "Pausar todos" button on the
+    /repos page wires here; matches the per-repo `repos_toggle` route's
+    semantics. Refresh / resume isn't exposed yet (visual placeholder in
+    the mock) — a future task will add `POST /repos/resume-all` and
+    render the right label dynamically based on aggregate enabled state.
+    """
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    with db.session() as s:
+        repos = list(s.execute(select(Repo)).scalars())
+        for r in repos:
+            r.enabled = 0
+    return RedirectResponse("/repos", status_code=303)
+
 @router.get("/repos", response_class=HTMLResponse)
 def repos_page(request: Request):
     settings = load_settings()
@@ -837,10 +854,11 @@ def pr_summarize(owner: str, name: str, number: int):
     settings = load_settings()
     db = engine_from_settings(settings)
     if not settings.llm.anthropic.api_key and not settings.llm.openai.api_key:
-        raise HTTPException(
-            400,
-            "No LLM API key configured. Visit /settings and add an "
-            "Anthropic or OpenAI key under LLM/Agent, then retry."
+        # Friendly bounce to /settings instead of a JSON 400 blob —
+        # the user is interacting via HTML and needs a real page.
+        return RedirectResponse(
+            f"/settings?error=no_llm_key&return=/pr/{owner}/{name}/{number}",
+            status_code=303,
         )
     with db.session() as s:
         repo = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
@@ -867,7 +885,13 @@ def pr_summarize(owner: str, name: str, number: int):
 @router.post("/pr/{owner}/{name}/{number}/run-review")
 def pr_run_review(owner: str, name: str, number: int,
                   agent: str = Form(...),
-                  skills: str = Form(""),
+                  # Multi-value: the dashboard widget renders one checkbox
+                  # per enabled skill. Declaring ``skills: list[str] = Form([])``
+                  # lets FastAPI hand us every checked value; the prior
+                  # ``skills: str = Form("")`` declaration silently dropped
+                  # all but the last checked skill because ``form_data.get``
+                  # returns a single value for non-multi params.
+                  skills: list[str] = Form(default_factory=list),
                   mode: str = Form("fresh")):
     settings = load_settings()
     db = engine_from_settings(settings)
@@ -875,7 +899,7 @@ def pr_run_review(owner: str, name: str, number: int,
     token = _safe_resolve_token(settings)
     if isinstance(token, RedirectResponse):
         return token
-    skill_names = [s.strip() for s in skills.split(",") if s.strip()]
+    skill_names = [s.strip() for s in (skills or []) if s.strip()]
     with GitHubClient(token=token) as gh:
         run_review(db, gh, owner=owner, name=name, number=number,
                    agent_name=agent, skill_names=skill_names, mode=mode,
@@ -952,7 +976,8 @@ def settings_auth_save(github_token: str = Form(""),
                        github_oauth_client_secret: str = Form(""),
                        github_token_edit: str = Form(""),
                        github_oauth_client_id_edit: str = Form(""),
-                       github_oauth_client_secret_edit: str = Form("")):
+                       github_oauth_client_secret_edit: str = Form(""),
+                       auth_mode: str = Form("pat")):
     settings = load_settings()
     # The settings page submits *two* fields per credential: the hidden
     # current value (carries the previous token when the user didn't touch
@@ -966,7 +991,15 @@ def settings_auth_save(github_token: str = Form(""),
         github_oauth_client_id=github_oauth_client_id_edit or github_oauth_client_id,
         github_oauth_client_secret=github_oauth_client_secret_edit or github_oauth_client_secret,
     )
-    return RedirectResponse("/settings", status_code=303)
+    # Persist the auth mode selection to config.yaml so the radio stays
+    # where the user put it across reloads (previously the selection was
+    # recomputed from the saved token presence, silently overriding the
+    # user's radio choice).
+    cfg_path = settings.data_dir / "config.yaml"
+    cfg = load_config_yaml(cfg_path)
+    cfg.setdefault("auth", {})["mode"] = auth_mode
+    save_config_yaml(cfg_path, cfg)
+    return RedirectResponse("/settings?ok=auth", status_code=303)
 
 @router.post("/settings/llm/save")
 def settings_llm_save(provider: str = Form("anthropic"),
@@ -975,7 +1008,8 @@ def settings_llm_save(provider: str = Form("anthropic"),
                       ollama_base_url: str = Form(""),
                       anthropic_api_key_edit: str = Form(""),
                       openai_api_key_edit: str = Form(""),
-                      ollama_base_url_edit: str = Form("")):
+                      ollama_base_url_edit: str = Form(""),
+                      anthropic_model: str = Form("")):
     settings = load_settings()
     # Mirror the auth-form "edit-or-current" semantics: the hidden field
     # carries the previous value, the visible `_edit` input is what the
@@ -986,8 +1020,110 @@ def settings_llm_save(provider: str = Form("anthropic"),
         anthropic_api_key=anthropic_api_key_edit or anthropic_api_key,
         openai_api_key=openai_api_key_edit or openai_api_key,
         ollama_base_url=ollama_base_url_edit or ollama_base_url,
+        anthropic_model=anthropic_model,
     )
-    return RedirectResponse("/settings", status_code=303)
+    return RedirectResponse("/settings?ok=llm", status_code=303)
+
+
+@router.post("/settings/auth/disconnect")
+def settings_auth_disconnect():
+    """Clear OAuth credentials + config auth.mode. The dashboard
+    re-validates the GitHub token eagerly on the next render, so a
+    stale PAT will bounce to /settings?error=github_auth instead of
+    silently using a dead credential.
+    """
+    settings = load_settings()
+    env_path = settings.data_dir / ".env"
+    if env_path.exists():
+        import os
+        lines = env_path.read_text().splitlines()
+        # Drop only OAuth credentials; keep the PAT untouched so the
+        # user can still authenticate without re-entering the token.
+        keep = [ln for ln in lines
+                if not (ln.startswith("TOWERWATCH_GITHUB_OAUTH_CLIENT_ID=")
+                        or ln.startswith("TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET=")
+                        or ln.startswith("TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN=")
+                        or ln.startswith("TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN="))]
+        tmp = env_path.with_suffix(env_path.suffix + ".tmp")
+        tmp.write_text("\n".join(keep) + "\n")
+        os.replace(tmp, env_path)
+    cfg_path = settings.data_dir / "config.yaml"
+    cfg = load_config_yaml(cfg_path)
+    cfg.setdefault("auth", {})["mode"] = "pat"
+    save_config_yaml(cfg_path, cfg)
+    return RedirectResponse("/settings?ok=auth", status_code=303)
+
+
+@router.post("/settings/restore-defaults")
+def settings_restore_defaults():
+    """Wipe both .env and config.yaml back to empty-template state.
+
+    The user has to confirm via a JS prompt (template). After this the
+    next dashboard request will redirect to /settings?first_run=1
+    because there's no token and no auth.mode.
+    """
+    import os
+    settings = load_settings()
+    env_path = settings.data_dir / ".env"
+    if env_path.exists():
+        env_path.unlink()
+    cfg_path = settings.data_dir / "config.yaml"
+    if cfg_path.exists():
+        cfg_path.unlink()
+    # Re-touch the files so subsequent reads don't 404.
+    env_path.touch()
+    cfg_path.touch()
+    return RedirectResponse("/settings?ok=defaults", status_code=303)
+
+
+@router.post("/settings/auth/test")
+def settings_auth_test():
+    """Probe GitHub with the current PAT and bounce to /settings with
+    a status banner. The button labelled "🔄 Probar conexión" on the
+    auth card wires here; the redirect lands the user back on
+    /settings with either ?test=ok or ?test=fail so the banner can
+    render the right state.
+    """
+    settings = load_settings()
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return RedirectResponse("/settings?test=auth_missing", status_code=303)
+    try:
+        with GitHubClient(token=token) as gh:
+            user = gh.get_authenticated_user()
+        return RedirectResponse(
+            f"/settings?test=auth_ok&login={user.login}", status_code=303
+        )
+    except Exception as e:
+        return RedirectResponse(
+            f"/settings?test=auth_fail&reason={type(e).__name__}", status_code=303
+        )
+
+
+@router.post("/settings/llm/test")
+def settings_llm_test():
+    """Probe the configured LLM provider with a tiny "ping" request.
+    Redirects to /settings?test=llm_ok or ?test=llm_fail. Lets the user
+    confirm their API key works without running a full review.
+    """
+    settings = load_settings()
+    if not settings.llm.anthropic.api_key and not settings.llm.openai.api_key:
+        return RedirectResponse("/settings?test=llm_missing", status_code=303)
+    try:
+        llm = get_provider(settings)
+        out = llm.summarize(
+            title="ping",
+            body="",
+            diff="",
+            metadata={"ping": True},
+        )
+        if not out:
+            raise RuntimeError("empty response from LLM")
+        return RedirectResponse("/settings?test=llm_ok", status_code=303)
+    except Exception as e:
+        return RedirectResponse(
+            f"/settings?test=llm_fail&reason={type(e).__name__}", status_code=303
+        )
 
 def _persist_auth_keys(env_path: Path, github_token: str,
                        github_oauth_client_id: str,
@@ -1031,7 +1167,8 @@ def _persist_auth_keys(env_path: Path, github_token: str,
     os.replace(tmp, env_path)
 
 def _persist_llm_keys(env_path: Path, provider: str, anthropic_api_key: str,
-                      openai_api_key: str, ollama_base_url: str) -> None:
+                      openai_api_key: str, ollama_base_url: str,
+                      anthropic_model: str = "") -> None:
     """Persist LLM-form values to .env, only touching the LLM keys.
 
     Empty form values are treated as "no change" so submitting a partial LLM
@@ -1047,6 +1184,12 @@ def _persist_llm_keys(env_path: Path, provider: str, anthropic_api_key: str,
         "TOWERWATCH_ANTHROPIC_API_KEY": anthropic_api_key,
         "TOWERWATCH_OPENAI_API_KEY": openai_api_key,
         "TOWERWATCH_OLLAMA_BASE_URL": ollama_base_url,
+        # Flat key — pydantic-settings auto-binds it to
+        # Settings.anthropic_model, which the model_validator mirrors
+        # into llm.anthropic.model. The nested key would be the more
+        # "correct" name but isn't auto-bound because LLMCfg is a plain
+        # BaseModel rather than a BaseSettings subclass.
+        "TOWERWATCH_ANTHROPIC_MODEL": anthropic_model,
     }
     keys = set(updates.keys())
     lines = env_path.read_text().splitlines() if env_path.exists() else []

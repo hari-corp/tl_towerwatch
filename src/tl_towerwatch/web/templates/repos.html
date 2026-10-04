@@ -49,8 +49,13 @@
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     <span>orden:</span>
-    <a href="#" style="color:var(--accent);text-decoration:none;">nombre ↑</a>
-    <button type="button">↻ Refrescar todos</button>
+    <span style="color:var(--accent);text-decoration:none;">nombre ↑</span>
+    <form method="post" action="/refresh-all" style="margin:0">
+      <button type="submit"
+              style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:3px 10px;border-radius:5px;font-size:12px;cursor:pointer;">
+        ↻ Refrescar todos
+      </button>
+    </form>
   </div>
 </div>
 
@@ -106,8 +111,18 @@
 <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);gap:10px;flex-wrap:wrap;">
   <span>{{ repo_count }} repos · {{ active_count }} activos · refresco global cada {{ global_interval_minutes }} min</span>
   <div style="display:flex;gap:8px;">
-    <button type="button">⏸ Pausar todos</button>
-    <button type="button" class="primary">▶ Refrescar todos ahora</button>
+    <form method="post" action="/repos/pause-all" style="margin:0">
+      <button type="submit"
+              style="background:var(--card);color:var(--fg);border:1px solid var(--border);padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+        ⏸ Pausar todos
+      </button>
+    </form>
+    <form method="post" action="/refresh-all" style="margin:0">
+      <button type="submit"
+              style="background:var(--success);color:#fff;border:0;padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+        ▶ Refrescar todos ahora
+      </button>
+    </form>
   </div>
 </div>
 
