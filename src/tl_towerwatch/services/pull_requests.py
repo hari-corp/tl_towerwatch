@@ -18,16 +18,33 @@ from tl_towerwatch.llm.base import LLMProvider
 from tl_towerwatch.services.repos import normalize_authors
 
 
-def _upsert_user(s: Session, login: str | None) -> None:
+def _upsert_user(
+    s: Session,
+    login: str | None,
+    *,
+    avatar_url: str | None = None,
+    display_name: str | None = None,
+) -> None:
     if not login:
         return
-    if s.get(User, login) is None:
-        s.add(User(login=login))
+    u = s.get(User, login)
+    if u is None:
+        s.add(User(login=login, avatar_url=avatar_url, display_name=display_name))
         s.flush()
+        return
+    if avatar_url and not u.avatar_url:
+        u.avatar_url = avatar_url
+    if display_name and not u.display_name:
+        u.display_name = display_name
 
 
 def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
-    _upsert_user(s, pr.author_login)
+    _upsert_user(
+        s,
+        pr.author_login,
+        avatar_url=getattr(pr, "author_avatar_url", None),
+        display_name=getattr(pr, "author_display_name", None),
+    )
     existing = s.execute(
         select(PullRequest).where(
             PullRequest.repo_id == repo_id, PullRequest.number == pr.number
@@ -67,7 +84,12 @@ def _replace_reviews_and_comments(
     s.query(Review).filter(Review.pr_id == pr_id).delete()
     s.query(ReviewComment).filter(ReviewComment.pr_id == pr_id).delete()
     for r in gh.list_reviews(owner, name, number):
-        _upsert_user(s, r.reviewer_login)
+        _upsert_user(
+            s,
+            r.reviewer_login,
+            avatar_url=getattr(r, "reviewer_avatar_url", None),
+            display_name=getattr(r, "reviewer_display_name", None),
+        )
         s.add(
             Review(
                 pr_id=pr_id,
@@ -78,7 +100,12 @@ def _replace_reviews_and_comments(
             )
         )
     for c in gh.list_comments(owner, name, number):
-        _upsert_user(s, c.reviewer_login)
+        _upsert_user(
+            s,
+            c.reviewer_login,
+            avatar_url=getattr(c, "reviewer_avatar_url", None),
+            display_name=getattr(c, "reviewer_display_name", None),
+        )
         s.add(
             ReviewComment(
                 pr_id=pr_id,
@@ -113,7 +140,7 @@ def _maybe_summarize(
         return
     text = llm.summarize(
         title=row.title,
-        body=row.body,
+        body=row.body or "",
         diff=diff_text,
         metadata={"number": row.number, "repo": repo_label},
     )

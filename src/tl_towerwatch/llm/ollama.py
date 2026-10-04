@@ -17,7 +17,7 @@ class OllamaProvider:
         r = httpx.post(
             f"{self._base_url}/api/generate",
             json={"model": self._model, "prompt":
-                  PROMPT_TEMPLATE.format(title=title, body=body or "",
+                  PROMPT_TEMPLATE.format(title=title, body=body,
                                          diff=diff[:12000]),
                   "stream": False},
             timeout=60.0,

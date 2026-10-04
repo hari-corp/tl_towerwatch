@@ -30,6 +30,8 @@ class PullRequestData:
     created_at: str
     updated_at: str
     requested_reviewers: list[str] = field(default_factory=list)
+    author_avatar_url: str | None = None
+    author_display_name: str | None = None
 
 @dataclass
 class ReviewData:
@@ -37,6 +39,8 @@ class ReviewData:
     state: str
     submitted_at: str
     body: str | None
+    reviewer_avatar_url: str | None = None
+    reviewer_display_name: str | None = None
 
 @dataclass
 class CommentData:
@@ -44,6 +48,8 @@ class CommentData:
     path: str | None
     body: str
     created_at: str
+    reviewer_avatar_url: str | None = None
+    reviewer_display_name: str | None = None
 
 @dataclass
 class FileData:

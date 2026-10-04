@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from sqlalchemy import select
 
 from tl_towerwatch.db.database import Database
 from tl_towerwatch.db.models import PullRequest, Review, ReviewComment
-
-
-@dataclass
-class Badge:
-    name: str
-    color: str
 
 
 COLORS = {

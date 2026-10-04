@@ -22,7 +22,7 @@ class OpenAIProvider:
             model=self._model,
             max_tokens=400,
             messages=[{"role": "user", "content":
-                       PROMPT_TEMPLATE.format(title=title, body=body or "",
+                       PROMPT_TEMPLATE.format(title=title, body=body,
                                               diff=diff[:12000])}],
         )
         return r.choices[0].message.content.strip()

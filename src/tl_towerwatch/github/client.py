@@ -102,6 +102,8 @@ class GitHubClient:
                 state=r["state"],
                 submitted_at=r["submitted_at"],
                 body=r.get("body"),
+                reviewer_avatar_url=r["user"].get("avatar_url"),
+                reviewer_display_name=r["user"].get("name"),
             ) for r in d
         ]
 
@@ -113,6 +115,8 @@ class GitHubClient:
                 path=c.get("path"),
                 body=c["body"],
                 created_at=c["created_at"],
+                reviewer_avatar_url=c["user"].get("avatar_url"),
+                reviewer_display_name=c["user"].get("name"),
             ) for c in d
         ]
 
@@ -140,11 +144,14 @@ class GitHubClient:
 
     @staticmethod
     def _parse_pr(pr: dict) -> PullRequestData:
+        user = pr.get("user") or {}
         return PullRequestData(
             number=pr["number"],
             title=pr["title"],
             body=pr.get("body"),
-            author_login=(pr.get("user") or {}).get("login"),
+            author_login=user.get("login"),
+            author_avatar_url=user.get("avatar_url"),
+            author_display_name=user.get("name"),
             state=pr["state"],
             draft=pr.get("draft", False),
             head_sha=pr["head"]["sha"],

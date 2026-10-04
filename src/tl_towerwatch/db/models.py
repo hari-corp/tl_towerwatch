@@ -53,7 +53,10 @@ class PullRequest(Base):
     created_at = Column(String, nullable=False)
     updated_at = Column(String, nullable=False)
     cached_at = Column(String, nullable=False)
-    __table_args__ = (Index("uq_pr_repo_number", "repo_id", "number", unique=True),)
+    __table_args__ = (
+        Index("uq_pr_repo_number", "repo_id", "number", unique=True),
+        Index("idx_pr_repo", "repo_id"),
+    )
 
 
 class Review(Base):
@@ -64,6 +67,7 @@ class Review(Base):
     state = Column(String, nullable=False)
     submitted_at = Column(String, nullable=False)
     body = Column(Text)
+    __table_args__ = (Index("idx_reviews_pr", "pr_id"),)
 
 
 class ReviewComment(Base):
@@ -74,6 +78,7 @@ class ReviewComment(Base):
     path = Column(String)
     body = Column(Text, nullable=False)
     created_at = Column(String, nullable=False)
+    __table_args__ = (Index("idx_comments_pr", "pr_id"),)
 
 
 class PRSummary(Base):
@@ -113,4 +118,6 @@ class ReviewFinding(Base):
     resolved_in_commit = Column(String)
     __table_args__ = (
         Index("uq_finding_run_key", "review_run_id", "finding_key", unique=True),
+        Index("idx_findings_run", "review_run_id"),
+        Index("idx_findings_key", "finding_key"),
     )

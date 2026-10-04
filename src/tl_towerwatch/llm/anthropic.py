@@ -23,7 +23,7 @@ class AnthropicProvider:
             max_tokens=400,
             messages=[{"role": "user",
                        "content": PROMPT_TEMPLATE.format(title=title,
-                                                          body=body or "",
+                                                          body=body,
                                                           diff=diff[:12000])}],
         )
         return msg.content[0].text.strip()
