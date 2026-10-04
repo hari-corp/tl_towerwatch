@@ -581,17 +581,20 @@ def auth_login():
     if not (s.oauth_client_id and s.oauth_client_secret):
         typer.echo("Set TOWERWATCH_GITHUB_OAUTH_CLIENT_ID and SECRET first.", err=True)
         raise typer.Exit(1)
-    host_alias = s.host_alias or "localhost"  # add `host_alias: str = "localhost"` to Settings
+    host_alias = s.host_alias or "localhost"  # add `host_alias: str = "localhost"` to Settings (in this task)
     cb = f"http://{host_alias}:8765/auth/callback"
     acc, ref = complete_oauth_flow(s.oauth_client_id, s.oauth_client_secret, cb)
-    from tl_towerwatch.config_io import save_config_yaml
-    cfg_path = s.data_dir / "config.yaml"
-    save_config_yaml(cfg_path, {**({"auth": {"mode": "oauth"}} | {"existing": "merge"})} if False else {})
-    # Simpler: write OAuth tokens via _persist_auth_keys
+    # Persist tokens via the web helper (already wired to preserve-on-empty)
     from tl_towerwatch.web.routes import _persist_auth_keys
     _persist_auth_keys(s.data_dir / ".env", github_token=s.github_token or "",
                        github_oauth_client_id=s.oauth_client_id or "",
                        github_oauth_client_secret=s.oauth_client_secret or "")
+    # Update config.yaml auth.mode = oauth
+    from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
+    cfg_path = s.data_dir / "config.yaml"
+    data = load_config_yaml(cfg_path)
+    data.setdefault("auth", {})["mode"] = "oauth"
+    save_config_yaml(cfg_path, data)
     typer.echo("✓ OAuth login complete. Tokens saved to .env.")
 ```
 
