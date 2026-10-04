@@ -231,3 +231,95 @@ def test_repos_route_shows_rate_limit_banner(tmp_path, monkeypatch, respx_mock):
         assert r.status_code == 200
         assert "Rate limit" in r.text
         assert "4500" in r.text
+
+
+def test_dashboard_counters_aggregate_across_prs(tmp_path, monkeypatch):
+    """Regression for the HIGH defect where the counters strip seeded the
+    spec §5.1 names but was incremented by raw `compute_badges` output
+    names. `pending_response` and `approved` badges therefore never
+    populated `needs_response` / `ready_to_merge` counters. Seed 3 PRs
+    covering each translation and assert `>1<` appears adjacent to the
+    three spec labels we expected to be 1, with `>0<` for the
+    `awaiting_my_review` label (no seeded PR targets it)."""
+    import re
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import (
+        PullRequest, Review, ReviewComment, User, now_iso,
+    )
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "o", "n")
+    with db.session() as s:
+        for login in ("dimh", "alice", "bob"):
+            if s.get(User, login) is None:
+                s.add(User(login=login))
+        s.flush()
+        # PR 1: alice opened, dimh reviewed with CHANGES_REQUESTED.
+        pr1 = PullRequest(repo_id=repo.id, number=1, title="cr", body=None,
+                          author_login="alice", state="open",
+                          draft=0, head_sha="a", base_ref="main",
+                          html_url="u",
+                          created_at=now_iso(), updated_at=now_iso(),
+                          cached_at=now_iso())
+        # PR 2: bob opened, dimh reviewed with APPROVED.
+        pr2 = PullRequest(repo_id=repo.id, number=2, title="lgtm", body=None,
+                          author_login="bob", state="open",
+                          draft=0, head_sha="b", base_ref="main",
+                          html_url="u",
+                          created_at=now_iso(), updated_at=now_iso(),
+                          cached_at=now_iso())
+        # PR 3: dimh authored, alice left a comment dimh hasn't replied to
+        # -> compute_badges emits `pending_response`, which should map to
+        # the spec counter `needs_response`.
+        pr3 = PullRequest(repo_id=repo.id, number=3, title="my-pr", body=None,
+                          author_login="dimh", state="open",
+                          draft=0, head_sha="c", base_ref="main",
+                          html_url="u",
+                          created_at=now_iso(), updated_at=now_iso(),
+                          cached_at=now_iso())
+        s.add_all([pr1, pr2, pr3])
+        s.flush()
+        # Use lowercase states — `compute_badges` compares against
+        # lowercase strings ("approved" / "changes_requested"); the v1.0
+        # `list_reviews` casing mismatch is parked as a minor known issue.
+        s.add(Review(pr_id=pr1.id, reviewer_login="dimh",
+                     state="changes_requested",
+                     submitted_at=now_iso(), body="needs more work"))
+        s.add(Review(pr_id=pr2.id, reviewer_login="dimh",
+                     state="approved",
+                     submitted_at=now_iso(), body="lgtm"))
+        s.add(ReviewComment(pr_id=pr3.id, reviewer_login="alice",
+                            path="x.py", body="thoughts?",
+                            created_at=now_iso()))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/")
+        assert r.status_code == 200
+        body = r.text
+        # The counters strip renders `{{ k.replace('_',' ') }}` for the
+        # label and `{{ v }}` for the value, in adjacent `<div>` blocks.
+        # Anchor the regex tightly so the assertion catches the bug where
+        # the wrong key was incremented (a loose `[\s\S]*?` would match
+        # a `>1<` from a different counter further down the page).
+        def _value_after(label_regex: str, expected: str) -> bool:
+            # label end (`</div>`) immediately followed by the value div.
+            pattern = (
+                r">" + label_regex + r"</div>\s*<div[^>]*>" + expected + r"<"
+            )
+            return re.search(pattern, body) is not None
+        assert _value_after(r"changes\s*requested", "1"), (
+            "expected `>1<` adjacent to `changes requested` label"
+        )
+        assert _value_after(r"ready\s*to\s*merge", "1"), (
+            "expected `>1<` adjacent to `ready to merge` label"
+        )
+        assert _value_after(r"needs\s*response", "1"), (
+            "expected `>1<` adjacent to `needs response` label"
+        )
+        assert _value_after(r"awaiting\s*my\s*review", "0"), (
+            "expected `>0<` adjacent to `awaiting my review` label"
+        )

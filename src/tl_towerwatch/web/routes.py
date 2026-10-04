@@ -46,18 +46,27 @@ def index(request: Request):
     db.create_all()
     login = "dimh"  # TODO: derive from auth in Task 18
     prs = list_prs_for_dashboard(db, login=login, scope_filter="mine_and_review")
-    # Status counters per spec §5.1: seed with the four named counters so they
-    # always render in the strip, then accumulate per-badge counts from
-    # `compute_badges`. Any badge name emitted by compute_badges will be added
-    # to the dict on first occurrence.
-    counts = {"awaiting_my_review": 0, "needs_response": 0,
-              "changes_requested": 0, "ready_to_merge": 0}
+    # Status counters per spec §5.1. `compute_badges` uses its own names
+    # (`pending_response`, `approved`, ...) that don't 1:1 match the spec
+    # counter names (`needs_response`, `ready_to_merge`, ...), so translate
+    # through `BADGE_TO_COUNTER` before incrementing. Any badge name absent
+    # from the mapping (e.g. `responded`) is intentionally not counted in
+    # the spec strip.
+    BADGE_TO_COUNTER = {
+        "awaiting_my_review": "awaiting_my_review",
+        "pending_response":   "needs_response",
+        "changes_requested":  "changes_requested",
+        "approved":           "ready_to_merge",
+    }
+    counts = {name: 0 for name in set(BADGE_TO_COUNTER.values())}
     badges_by_pr: dict[int, list[dict]] = {}
     for pr in prs:
         badges = compute_badges(db, login, pr)
         badges_by_pr[pr.id] = badges
         for b in badges:
-            counts[b["name"]] = counts.get(b["name"], 0) + 1
+            key = BADGE_TO_COUNTER.get(b["name"])
+            if key:
+                counts[key] += 1
     return templates.TemplateResponse(request, "dashboard.html",
         {"nav": "home", "theme": _theme(request),
          "prs": prs, "badges_by_pr": badges_by_pr,
