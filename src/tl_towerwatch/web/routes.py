@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
 from tl_towerwatch.auth.github import resolve_token
-from tl_towerwatch.config import load_settings
+from tl_towerwatch.config import Settings, load_settings
 from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.db.models import (
@@ -73,11 +73,51 @@ templates.env.filters["status_label"] = _status_label
 
 router = APIRouter()
 
+
+def _redirect_on_auth_error(e: RuntimeError) -> RedirectResponse:
+    """Convert a ``RuntimeError`` raised by ``resolve_token`` about invalid or
+    missing GitHub credentials into a redirect to ``/settings``.
+
+    Per spec §8.1, a stale or 401-returning token must surface to the user so
+    they can reconfigure it. Anything else (``RuntimeError`` from a code bug)
+    is re-raised so the normal 500 handler reports it.
+    """
+    msg = str(e).lower()
+    if "invalid" in msg or "401" in msg or "no github credentials" in msg:
+        return RedirectResponse("/settings?error=github_auth", status_code=303)
+    raise e
+
+
+def _safe_resolve_token(settings: Settings) -> str | RedirectResponse:
+    """Resolve the GitHub token, returning a redirect to /settings on auth failure.
+
+    Routes that talk to GitHub should call this instead of ``resolve_token``
+    directly so a 401 / missing-credentials state ends in a friendly redirect
+    instead of a 500. On success returns the token string; on auth failure
+    returns a ``RedirectResponse`` the route should propagate.
+    """
+    try:
+        return resolve_token(settings)
+    except RuntimeError as e:
+        return _redirect_on_auth_error(e)
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
+    # v1.1 (Task 10): first-run redirect — if neither a PAT nor an OAuth
+    # refresh token is configured AND config.yaml carries no auth.mode,
+    # send the user straight to /settings instead of an empty dashboard.
+    cfg = load_config_yaml(settings.data_dir / "config.yaml")
+    if not settings.github_token and not cfg.get("auth", {}).get("mode"):
+        return RedirectResponse("/settings?first_run=1", status_code=303)
+    # Validate the token eagerly so a stale/401 credential bounces to
+    # /settings?error=github_auth before we try to render the dashboard.
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
     login = "dimh"  # TODO: derive from auth in Task 18
     prs = list_prs_for_dashboard(db, login=login, scope_filter="mine_and_review")
     # Status counters per spec §5.1. `compute_badges` uses its own names
@@ -111,12 +151,19 @@ def repos_page(request: Request):
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
+    # v1.1 (Task 10): validate the token up front so a 401 bounces to
+    # /settings?error=github_auth instead of silently rendering the page
+    # without a rate-limit banner (the swallowed-exception path was
+    # masking the auth failure from the user).
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
     # Cheap rate-limit probe: surfaces in the banner whether the configured
-    # credentials are usable. Any error (no token, network, 401) is swallowed
-    # so the page still renders.
+    # credentials are usable. Network errors are swallowed so the page still
+    # renders; auth errors are caught by ``_safe_resolve_token`` above.
     rl: dict | None = None
     try:
-        with GitHubClient(token=resolve_token(settings)) as gh:
+        with GitHubClient(token=token) as gh:
             r = gh._client.get("/rate_limit")
             if r.status_code == 200:
                 core = r.json().get("resources", {}).get("core", {})
@@ -145,8 +192,14 @@ def repos_add(owner_name: str = Form(...), authors: str = Form("")):
     db = engine_from_settings(settings)
     db.create_all()
     authors_list = [a for a in authors.split(",") if a.strip()]
+    # v1.1 (Task 10): a 401 from the token bounces to /settings?error=github_auth
+    # so the user re-pastes a working PAT instead of seeing a misleading
+    # "could not validate repo" message.
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
     try:
-        with GitHubClient(token=resolve_token(settings)) as gh:
+        with GitHubClient(token=token) as gh:
             gh.get_repo(owner, name)
     except Exception as e:
         return HTMLResponse(f"<p>No pude validar {owner}/{name}: {e}</p>", status_code=400)
@@ -282,8 +335,13 @@ def pr_refresh(owner: str, name: str, number: int):
     db = engine_from_settings(settings)
     with db.session() as s:
         repo = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
+    # v1.1 (Task 10): a 401 from the token bounces to /settings?error=github_auth
+    # before we hit the network on sync_one_pr.
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
     llm = get_provider(settings) if settings.llm.anthropic.api_key else None
-    with GitHubClient(token=resolve_token(settings)) as gh:
+    with GitHubClient(token=token) as gh:
         sync_one_pr(db, gh, repo, number, llm=llm)
     return RedirectResponse(f"/pr/{owner}/{name}/{number}", status_code=303)
 
@@ -294,8 +352,12 @@ def pr_run_review(owner: str, name: str, number: int,
                   mode: str = Form("fresh")):
     settings = load_settings()
     db = engine_from_settings(settings)
+    # v1.1 (Task 10): see pr_refresh — bounce to /settings on auth failure.
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
     skill_names = [s.strip() for s in skills.split(",") if s.strip()]
-    with GitHubClient(token=resolve_token(settings)) as gh:
+    with GitHubClient(token=token) as gh:
         run_review(db, gh, owner=owner, name=name, number=number,
                    agent_name=agent, skill_names=skill_names, mode=mode,
                    timeout_seconds=300, settings=settings)

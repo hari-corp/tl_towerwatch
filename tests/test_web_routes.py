@@ -2,6 +2,64 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from tl_towerwatch.web import create_app
 
+
+# ---------------------------------------------------------------------------
+# v1.1 Task 10 — first-run redirect + 401 → settings redirect
+# ---------------------------------------------------------------------------
+
+def test_first_run_redirects_to_settings(tmp_path, monkeypatch):
+    """v1.1 (Task 10): when neither a PAT nor an OAuth refresh token is
+    configured, ``GET /`` must redirect to ``/settings?first_run=1`` so the
+    user lands on the auth form instead of an empty dashboard. TestClient
+    follows the redirect by default, so the final response has status 200
+    and the resolved URL points at ``/settings``.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # ``_load_env_file_into_environ`` writes to os.environ directly, which
+    # leaks across tests (a pre-existing quirk). ``delenv`` defensively
+    # blanks the auth env vars this test asserts are absent so the
+    # first-run guard sees a clean slate.
+    for var in ("TOWERWATCH_GITHUB_TOKEN",
+                "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID",
+                "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET",
+                "TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN",
+                "TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "/settings" in r.url.path
+        assert "first_run=1" in str(r.url)
+
+
+def test_github_401_redirects_to_settings(tmp_path, monkeypatch, respx_mock):
+    """v1.1 (Task 10): when the configured PAT returns 401 from ``GET /user``,
+    ``GET /`` must redirect to ``/settings?error=github_auth`` so the user
+    can re-paste a working token. Any subsequent route that touches GitHub
+    uses the same helper, so the same redirect fires from ``/repos`` etc.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # Wipe any leaked oauth tokens so the first-run guard doesn't fire and
+    # the 401 redirect from ``resolve_token`` is the one we exercise.
+    for var in ("TOWERWATCH_GITHUB_OAUTH_CLIENT_ID",
+                "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET",
+                "TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN",
+                "TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(401, json={"message": "Bad credentials"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/", headers={"Cookie": "session=stub"})
+        assert r.status_code == 200
+        assert "/settings" in r.url.path
+        assert "error=github_auth" in str(r.url)
+
 def test_index_renders():
     app = create_app()
     with TestClient(app) as c:
@@ -39,8 +97,16 @@ def test_theme_validates_input(tmp_path, monkeypatch):
         r = c.post("/theme", data={"theme": "rainbow"})
         assert r.status_code == 400
 
-def test_dashboard_renders_empty(tmp_path, monkeypatch):
+def test_dashboard_renders_empty(tmp_path, monkeypatch, respx_mock):
+    # v1.1 (Task 10): the dashboard now eagerly validates the configured token
+    # so a 401 bounces to /settings. Stub /user with a valid scopes header so
+    # the validation passes and we exercise the dashboard render path.
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
     from tl_towerwatch.config import load_settings
     load_settings(tmp_path)
     from tl_towerwatch.web import create_app
@@ -51,8 +117,17 @@ def test_dashboard_renders_empty(tmp_path, monkeypatch):
         assert r.status_code == 200
         assert "PRs" in r.text
 
-def test_repos_route_lists_and_adds(tmp_path, monkeypatch):
+def test_repos_route_lists_and_adds(tmp_path, monkeypatch, respx_mock):
+    # v1.1 (Task 10): /repos and /repos/add now require a valid token; stub
+    # /user so the auth gate passes and we can reach the page render and
+    # the GitHub-repo probe (we deliberately do not mock /repos/{owner}/{name}
+    # so the add POST surfaces a network error as before).
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
     from tl_towerwatch.config import load_settings
     load_settings(tmp_path)
     from tl_towerwatch.web import create_app
@@ -150,10 +225,16 @@ def test_settings_llm_save_does_not_wipe_auth_fields(tmp_path, monkeypatch):
     assert "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-FAKE" in env_text
 
 
-def test_dashboard_renders_status_counters(tmp_path, monkeypatch):
+def test_dashboard_renders_status_counters(tmp_path, monkeypatch, respx_mock):
     """Seed DB with PRs in different states; assert the counters strip renders
     the spec §5.1 names with non-zero counts for the seeded badges."""
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # v1.1 (Task 10): the dashboard validates the token; stub /user.
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
     from tl_towerwatch.db.models import PullRequest, Review, User, now_iso
@@ -233,7 +314,7 @@ def test_repos_route_shows_rate_limit_banner(tmp_path, monkeypatch, respx_mock):
         assert "4500" in r.text
 
 
-def test_dashboard_counters_aggregate_across_prs(tmp_path, monkeypatch):
+def test_dashboard_counters_aggregate_across_prs(tmp_path, monkeypatch, respx_mock):
     """Regression for the HIGH defect where the counters strip seeded the
     spec §5.1 names but was incremented by raw `compute_badges` output
     names. `pending_response` and `approved` badges therefore never
@@ -243,6 +324,12 @@ def test_dashboard_counters_aggregate_across_prs(tmp_path, monkeypatch):
     `awaiting_my_review` label (no seeded PR targets it)."""
     import re
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # v1.1 (Task 10): the dashboard validates the token; stub /user.
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
     from tl_towerwatch.db.models import (
