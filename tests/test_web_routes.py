@@ -505,6 +505,126 @@ def test_dashboard_filters_and_sort_are_wired(tmp_path, monkeypatch, respx_mock)
         assert 'name="q"' in r.text
 
 
+def test_dashboard_dropdowns_show_all_repos_and_authors(tmp_path, monkeypatch, respx_mock):
+    """Regression — the v1.2.4 dropdowns were populated from the
+    *currently-filtered* PR list, so a scope that hid everything
+    (e.g. scope=review when no PRs are review-requested) left the
+    repo and author selects empty. The user couldn't escape the
+    empty view because the controls had nothing to choose.
+
+    After the fix ``all_repos`` is queried straight from the Repo
+    table and ``all_authors`` from the User table — independent of
+    the active filter scope. The dropdowns render every watched
+    repo and every known GitHub login as filter options regardless
+    of how many PRs the current scope contains.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    # Three repos; PRs only in one of them.
+    repo_a = add_repo(db, "acme", "alpha")
+    repo_b = add_repo(db, "acme", "beta")
+    repo_c = add_repo(db, "other-org", "delta")
+    with db.session() as s:
+        # 4 known authors — only one has any PRs.
+        for login in ("dimh", "alice", "bob", "carol"):
+            s.add(User(login=login))
+        s.flush()
+        s.add(PullRequest(repo_id=repo_a.id, number=1, title="only PR", body="", author_login="dimh", state="open", draft=0, head_sha="abc", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
+    app = create_app()
+    with TestClient(app) as c:
+        # Scope=review with no review-requested PRs still shows every repo
+        # and every known author as filter options.
+        r = c.get("/?scope=review")
+        assert r.status_code == 200
+        # All three watched repos are present in the dropdown.
+        assert "acme/alpha" in r.text
+        assert "acme/beta" in r.text
+        assert "other-org/delta" in r.text
+        # All four known authors are present.
+        for login in ("dimh", "alice", "bob", "carol"):
+            assert f'value="{login}"' in r.text
+
+        # Default scope (attention) — same expectation.
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "acme/alpha" in r.text
+        assert "acme/beta" in r.text
+        assert "other-org/delta" in r.text
+        for login in ("dimh", "alice", "bob", "carol"):
+            assert f'value="{login}"' in r.text
+
+
+def test_dashboard_sort_supports_ascending(tmp_path, monkeypatch, respx_mock):
+    """Regression — the v1.2.4 sort chips only offered
+    updated_desc / created_desc / title (the desc variants). The
+    user pointed out that flipping the order should also work
+    without resetting their filter state, so the route + template
+    now also support updated_asc and created_asc.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(User(login="dimh"))
+        s.flush()
+        # Two PRs with different updated_at timestamps — verify asc
+        # ordering flips the render order.
+        s.add(PullRequest(repo_id=repo.id, number=1, title="older PR", body="", author_login="dimh", state="open", draft=0, head_sha="abc", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
+        s.add(PullRequest(repo_id=repo.id, number=2, title="newer PR", body="", author_login="dimh", state="open", draft=0, head_sha="def", base_ref="main", html_url="https://x/2", created_at="2026-02-01T00:00:00Z", updated_at="2026-02-01T00:00:00Z", cached_at="2026-02-01T00:00:00Z"))
+    app = create_app()
+    with TestClient(app) as c:
+        # Default = updated_desc → newer first.
+        r = c.get("/?scope=all")
+        assert r.status_code == 200
+        body = r.text
+        idx_newer = body.find("newer PR")
+        idx_older = body.find("older PR")
+        assert 0 < idx_newer < idx_older
+
+        # updated_asc → older first.
+        r = c.get("/?scope=all&sort=updated_asc")
+        assert r.status_code == 200
+        body = r.text
+        idx_newer = body.find("newer PR")
+        idx_older = body.find("older PR")
+        assert 0 < idx_older < idx_newer
+
+        # created_asc → older first (created_at 2026-01-01 < 2026-02-01).
+        r = c.get("/?scope=all&sort=created_asc")
+        assert r.status_code == 200
+        body = r.text
+        idx_newer = body.find("newer PR")
+        idx_older = body.find("older PR")
+        assert 0 < idx_older < idx_newer
+
+        # Sort chips render every variant.
+        for sort_id in ("updated_desc", "updated_asc", "created_desc", "created_asc", "title"):
+            r = c.get(f"/?scope=all&sort={sort_id}")
+            assert r.status_code == 200
+
+
 def test_settings_renders_when_no_user_yet(tmp_path, monkeypatch):
     """Task 19: when no User row is seeded (first-run state, before any
     GitHub sync has populated the users table), the settings page must

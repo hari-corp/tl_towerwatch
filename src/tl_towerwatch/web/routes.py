@@ -256,6 +256,20 @@ def index(request: Request,
             prs.append(p)
     else:
         prs = list_prs_for_dashboard(db, login=login, scope_filter=raw_scope)
+    # Dropdown sources are pulled BEFORE the row-level filters so the user
+    # always sees every watched repo and every known User as a filter
+    # option — not just the ones that survived the current scope+repo
+    # filter. Without this, switching scope to one that hides everything
+    # (e.g. scope=review when you have no review-requested PRs) leaves
+    # the repo/author dropdowns empty and the user can't escape the
+    # empty view because there's nothing to choose.
+    all_repos_rows: list[Repo] = []
+    all_author_logins: list[str] = []
+    with db.session() as s:
+        all_repos_rows = list(s.execute(select(Repo).order_by(Repo.owner, Repo.name)).scalars())
+        all_author_logins = [row[0] for row in s.execute(
+            select(User.login).order_by(User.login)
+        ).all() if row[0]]
     # PullRequest only carries repo_id (FK); the template needs owner/name to
     # build detail-page links and per-PR action buttons. Resolve owner/name
     # BEFORE the row-level filters so ``?repo=owner/name`` can match.
@@ -331,11 +345,17 @@ def index(request: Request,
         needle = q.lower()
         prs = [p for p in prs if needle in (p.title or "").lower()]
     # Sort: list_prs_for_dashboard already sorts by updated_at desc; we
-    # re-sort to honour the user's choice.
+    # re-sort to honour the user's choice. Both ascending and descending
+    # variants are supported so the user can flip the order without
+    # losing the rest of their filter state.
     if sort == "updated_desc":
         prs.sort(key=lambda p: p.updated_at, reverse=True)
+    elif sort == "updated_asc":
+        prs.sort(key=lambda p: p.updated_at)
     elif sort == "created_desc":
         prs.sort(key=lambda p: p.created_at, reverse=True)
+    elif sort == "created_asc":
+        prs.sort(key=lambda p: p.created_at)
     elif sort == "title":
         prs.sort(key=lambda p: (p.title or "").lower())
     # Status counters per spec §5.1. `compute_badges` uses its own names
@@ -367,8 +387,8 @@ def index(request: Request,
          # the active tab/sort/select and build cross-filter preserving
          # links for the tab and sort chips.
          "scope": scope, "repo": repo, "author": author, "q": q, "sort": sort,
-         "all_repos": list(repos_by_id.values()),
-         "all_authors": sorted({p.author_login for p in prs if p.author_login}),
+         "all_repos": all_repos_rows,
+         "all_authors": all_author_logins,
          **_user_context(db, login)})
 
 @router.post("/refresh-all")

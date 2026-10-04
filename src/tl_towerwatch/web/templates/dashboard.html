@@ -58,7 +58,7 @@
     </div>
     <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
       <span>order:</span>
-      {% for sort_id, sort_label in [('updated_desc', 'updated ↓'), ('created_desc', 'created ↓'), ('title', 'title A→Z')] %}
+      {% for sort_id, sort_label in [('updated_desc', 'updated ↓'), ('updated_asc', 'updated ↑'), ('created_desc', 'created ↓'), ('created_asc', 'created ↑'), ('title', 'title A→Z')] %}
       {% set scope_part %}{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}{% endset %}
       {% set repo_part %}{% if repo %}&repo={{ repo }}{% endif %}{% endset %}
       {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
