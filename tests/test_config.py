@@ -52,3 +52,7 @@ def test_settings_oauth_keys_have_github_prefix(monkeypatch, tmp_path):
     assert s.github_oauth_client_secret == "csec"
     assert s.github_oauth_access_token == "acc"
     assert s.github_oauth_refresh_token == "ref"
+
+def test_auth_mode_defaults_to_pat(tmp_path):
+    s = load_settings(tmp_path)
+    assert s.auth.mode == "pat"

@@ -26,6 +26,9 @@ class LLMCfg(BaseModel):
     openai: OpenAICfg = Field(default_factory=OpenAICfg)
     ollama: OllamaCfg = Field(default_factory=OllamaCfg)
 
+class AuthCfg(BaseModel):
+    mode: Literal["pat", "oauth"] = "pat"
+
 class Settings(BaseSettings):
     # env_file is intentionally omitted: .env must be loaded relative to the
     # configured data_dir (see load_settings), not the current working
@@ -50,6 +53,7 @@ class Settings(BaseSettings):
     refresh_interval_seconds: int = 300
 
     llm: LLMCfg = Field(default_factory=LLMCfg)
+    auth: AuthCfg = Field(default_factory=AuthCfg)
 
     @model_validator(mode="after")
     def _mirror_llm_keys(self) -> Settings:
