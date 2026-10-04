@@ -62,3 +62,23 @@ def test_config_help():
 def test_auth_refresh_help():
     r = runner.invoke(app, ["auth", "refresh", "--help"])
     assert r.exit_code == 0
+
+
+def test_init_pat_path_writes_config(tmp_path: Path, monkeypatch):
+    """v1.1 init wizard (Task 3): PAT path must write config.yaml with
+    auth.mode=pat and the chosen LLM provider + model."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    responses = iter(["pat", "ghp_test", "anthropic", "claude-3-5-sonnet-latest"])
+    monkeypatch.setattr("typer.prompt", lambda *a, **kw: next(responses))
+    # Skip any OAuth sub-flow confirm; init returns after writing config.
+    monkeypatch.setattr("typer.confirm", lambda *a, **kw: False)
+    # Avoid hitting GitHub in the token validation path.
+    monkeypatch.setattr(
+        "tl_towerwatch.auth.github.resolve_token",
+        lambda settings: "ghp_test",
+    )
+    runner.invoke(app, ["init"], input="")
+    cfg = (tmp_path / "config.yaml").read_text()
+    assert "auth:" in cfg
+    assert "mode: pat" in cfg
+    assert "default_provider: anthropic" in cfg

@@ -36,14 +36,94 @@ def _db():
     s = load_settings()
     return engine_from_settings(s)
 
+def _env_lines_for(s):
+    """Render the on-disk .env representation of the active settings.
+
+    Used by ``init`` after the wizard collects secrets so subsequent
+    ``load_settings(data_dir)`` (v1.0 fix C2) sees them on next start.
+    Only writes keys that have a non-empty value, matching the
+    pre-existing behaviour of the stub init.
+    """
+    lines = []
+    if s.github_token:
+        lines.append(f"TOWERWATCH_GITHUB_TOKEN={s.github_token}")
+    if s.oauth_client_id:
+        lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_ID={s.oauth_client_id}")
+    if s.oauth_client_secret:
+        lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET={s.oauth_client_secret}")
+    if s.llm.anthropic.api_key:
+        lines.append(f"TOWERWATCH_ANTHROPIC_API_KEY={s.llm.anthropic.api_key}")
+    if s.llm.openai.api_key:
+        lines.append(f"TOWERWATCH_OPENAI_API_KEY={s.llm.openai.api_key}")
+    return "\n".join(lines) + "\n"
+
+
 @app.command()
 def init():
-    """First-time setup wizard (stub — expanded in Task 11)."""
+    """First-time setup wizard."""
+    import click
+
     settings = load_settings()
-    token = typer.prompt("GitHub PAT (will be stored in .env)", hide_input=True)
-    settings.github_token = token
-    (settings.data_dir / ".env").write_text(f"TOWERWATCH_GITHUB_TOKEN={token}\n")
-    typer.echo("✓ Saved. Next: tl_towerwatch repo add owner/name")
+    from tl_towerwatch.config_io import save_config_yaml
+    from tl_towerwatch.auth.github import resolve_token
+
+    mode = typer.prompt(
+        "Auth mode", type=click.Choice(["pat", "oauth"]), default="pat"
+    )
+    if mode == "pat":
+        token = typer.prompt("GitHub PAT", hide_input=True)
+        settings.github_token = token
+        # Validate now (raises RuntimeError on failure → friendly message)
+        try:
+            resolve_token(settings)
+            typer.echo("✓ Token validated")
+        except RuntimeError as e:
+            typer.echo(f"✗ {e}", err=True)
+            raise typer.Exit(1)
+    else:
+        cid = typer.prompt("OAuth client_id")
+        csec = typer.prompt("OAuth client_secret", hide_input=True)
+        settings.oauth_client_id = cid
+        settings.oauth_client_secret = csec
+        typer.echo(
+            "Run `tl_towerwatch auth login` to complete the browser flow."
+        )
+
+    provider = typer.prompt(
+        "Default LLM provider",
+        type=click.Choice(["anthropic", "openai", "ollama"]),
+        default="anthropic",
+    )
+    default_model = {
+        "anthropic": "claude-3-5-sonnet-latest",
+        "openai": "gpt-4o",
+        "ollama": "llama3.2",
+    }[provider]
+    model = typer.prompt(f"{provider} model", default=default_model)
+
+    save_config_yaml(
+        settings.data_dir / "config.yaml",
+        {
+            "auth": {"mode": mode},
+            "llm": {"default_provider": provider, provider: {"model": model}},
+            "skills": {
+                "superpowers": {
+                    "enabled": True,
+                    "cli_flag": "--enable-superpowers",
+                    "description": "Code-review and quality skills",
+                },
+                "ponytail": {
+                    "enabled": True,
+                    "cli_flag": "--skill ponytail",
+                    "description": "Custom review heuristics",
+                },
+            },
+        },
+    )
+    (settings.data_dir / ".env").write_text(_env_lines_for(settings))
+    typer.echo(
+        "✓ Init complete. Next: tl_towerwatch repo add owner/name"
+    )
 
 @repo_app.command("add")
 def repo_add(
