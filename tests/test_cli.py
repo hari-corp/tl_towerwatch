@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -5,6 +6,31 @@ from typer.testing import CliRunner
 from tl_towerwatch.cli import app
 
 runner = CliRunner()
+
+
+class _StubFile:
+    patch = "+ x\n"
+
+
+class _StubPR:
+    number = 1
+    title = "t"
+    body = "b"
+    author_login = "a"
+    head_sha = "s1"
+
+
+class _StubGH:
+    def __init__(self, *a, **kw) -> None:
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        return False
+    def get_pr(self, owner, name, number):
+        return _StubPR()
+    def list_pr_files(self, owner, name, number):
+        return [_StubFile()]
 
 def test_help_runs():
     result = runner.invoke(app, ["--help"])
@@ -31,6 +57,35 @@ def test_review_help():
     assert "--skills" in result.stdout
     assert "--mode" in result.stdout
     assert "--watch" in result.stdout
+
+
+def test_review_watch_streams_events(tmp_path, monkeypatch, fake_claude):
+    """v1.1 Task 6: `tl_towerwatch review --watch` must invoke the agent
+    runner with an on_event callback that echoes events to terminal stdout.
+    We stub resolve_token + GitHubClient (no live network) and rely on the
+    shared ``fake_claude`` fixture for a real agent binary that emits one
+    finding plus the TLTW:DONE sentinel — verifying both make it through
+    the on_event callback into the CliRunner's captured stdout."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / "config.yaml").touch()
+    monkeypatch.setenv("PATH", f"{fake_claude.parent}:{os.environ['PATH']}")
+    # Auth + network stubs (no GitHub token, no httpx calls).
+    # Patch the canonical function (the cli's review body re-imports it).
+    monkeypatch.setattr("tl_towerwatch.auth.github.resolve_token", lambda s: "x")
+    # Same reasoning for GitHubClient: the `from ... import GitHubClient`
+    # inside review() looks up the attribute on the source module.
+    monkeypatch.setattr("tl_towerwatch.github.client.GitHubClient", _StubGH)
+    result = runner.invoke(app, ["review", "o/n#1", "--watch"])
+    assert result.exit_code == 0, (
+        f"review --watch failed: exit={result.exit_code} "
+        f"stdout={result.stdout!r} exc={result.exception!r}"
+    )
+    # fake_claude emits a finding + the TLTW:DONE sentinel; the on_event
+    # callback formats them as "[stdout] ..." / "[sentinel] ..." lines.
+    assert "[stdout]" in result.stdout
+    assert "[sentinel]" in result.stdout
+    # No "streaming is a v1.1 follow-up" placeholder text from the v1.0 stub.
+    assert "v1.1 follow-up" not in result.stdout
 
 def test_repo_add_author_help():
     r = runner.invoke(app, ["repo", "add-author", "--help"])

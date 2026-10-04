@@ -338,18 +338,50 @@ def review(
     owner, _, name = owner_name.partition("/")
     skill_names = [s.strip() for s in skills.split(",") if s.strip()]
     settings = load_settings()
-    db = _db()
-    db.create_all()
     from tl_towerwatch.auth.github import resolve_token
     from tl_towerwatch.github.client import GitHubClient
-    with GitHubClient(token=resolve_token(settings)) as gh:
-        run_review(
-            db, gh,
-            owner=owner, name=name, number=int(number),
-            agent_name=agent, skill_names=skill_names, mode=mode,
-            timeout_seconds=300, settings=settings,
-        )
-    typer.echo(f"✓ Review submitted for {owner}/{name}#{number}")
+
     if watch:
-        typer.echo("(streaming mode is a v1.1 follow-up; run submitted, "
-                   "check the dashboard or `tl_towerwatch serve` for live output)")
+        # v1.1 (Task 6): stream agent events to the terminal as they happen.
+        # Deliberately bypasses services.review_runner.run_review (no DB
+        # persistence, no ReviewRun row) — streaming callers want live
+        # output, not a persisted run record. Skills/registry is loaded
+        # straight from settings.data_dir (same source as the service).
+        from tl_towerwatch.agents import get_runner
+        from tl_towerwatch.skills.registry import load_registry
+        with GitHubClient(token=resolve_token(settings)) as gh:
+            pr = gh.get_pr(owner, name, int(number))
+            files = gh.list_pr_files(owner, name, int(number))[:30]
+            pr_diff = "\n".join((f.patch or "") for f in files)[:20000]
+            sk = load_registry(settings.data_dir)
+            runner = get_runner(agent, settings)
+            def on_event(e):
+                typer.echo(f"[{e.kind}] {e.data[:200]}")
+            runner.run_review(
+                pr_diff=pr_diff,
+                pr_metadata={
+                    "title": pr.title,
+                    "body": pr.body,
+                    "author": pr.author_login,
+                    "number": pr.number,
+                    "repo": f"{owner}/{name}",
+                    "head_sha": pr.head_sha,
+                },
+                skills=sk,
+                prompt_template=None,
+                mode=mode,
+                previous_findings=[],
+                timeout_seconds=300,
+                on_event=on_event,
+            )
+    else:
+        db = _db()
+        db.create_all()
+        with GitHubClient(token=resolve_token(settings)) as gh:
+            run_review(
+                db, gh,
+                owner=owner, name=name, number=int(number),
+                agent_name=agent, skill_names=skill_names, mode=mode,
+                timeout_seconds=300, settings=settings,
+            )
+        typer.echo(f"✓ Review submitted for {owner}/{name}#{number}")
