@@ -3,6 +3,13 @@
 <head>
   <meta charset="utf-8">
   <title>{% block title %}tl_towerwatch{% endblock %}</title>
+  <script>
+    // Mirror cookie → localStorage so JS can read theme without re-render
+    try {
+      const m = document.cookie.match(/tl_towerwatch_theme=([^;]+)/);
+      if (m) localStorage.setItem('theme', m[1]);
+    } catch {}
+  </script>
   <script src="https://unpkg.com/htmx.org@1.9.10"></script>
   <style>
     :root[data-theme="dark"]  { --bg:#0f1418; --fg:#e6edf3; --muted:#8b949e; --card:#161b22; --border:#2d333b; --accent:#58a6ff; }

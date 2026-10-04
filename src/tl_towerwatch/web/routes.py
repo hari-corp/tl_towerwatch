@@ -3,13 +3,14 @@ from __future__ import annotations
 import json as _json
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Request, Response
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
 from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import load_settings
+from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.db.models import PRSummary, PullRequest, Repo, ReviewRun
 from tl_towerwatch.github.client import GitHubClient
@@ -111,14 +112,29 @@ def repos_remove(owner: str, name: str):
     svc_remove_repo(db, owner, name)
     return RedirectResponse("/repos", status_code=303)
 
+ALLOWED_THEMES = {"dark", "light", "system"}
+
 @router.post("/theme")
-async def theme(theme: str = Form(...)):
-    resp = Response(status_code=200, content="")
-    resp.set_cookie("tl_towerwatch_theme", theme, httponly=False, samesite="lax")
-    return resp
+def theme(request: Request, theme: str = Form(...)):
+    if theme not in ALLOWED_THEMES:
+        raise HTTPException(400, "invalid theme")
+    settings = load_settings()
+    cfg_path = settings.data_dir / "config.yaml"
+    data = load_config_yaml(cfg_path)
+    data["theme"] = theme
+    save_config_yaml(cfg_path, data)
+    r = RedirectResponse("/", status_code=303)
+    r.set_cookie("tl_towerwatch_theme", theme, httponly=False, samesite="lax")
+    return r
 
 def _theme(request: Request) -> str:
-    return request.cookies.get("tl_towerwatch_theme", "dark")
+    c = request.cookies.get("tl_towerwatch_theme")
+    if c in ALLOWED_THEMES:
+        return c
+    settings = load_settings()
+    data = load_config_yaml(settings.data_dir / "config.yaml")
+    t = data.get("theme", "dark")
+    return t if t in ALLOWED_THEMES else "dark"
 
 @router.get("/pr/{owner}/{name}/{number}", response_class=HTMLResponse)
 def pr_detail(request: Request, owner: str, name: str, number: int):

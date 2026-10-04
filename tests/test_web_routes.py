@@ -8,13 +8,35 @@ def test_index_renders():
         assert r.status_code == 200
         assert "tl_towerwatch" in r.text
 
-def test_theme_toggle_sets_cookie():
+def test_theme_toggle_sets_cookie(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
     app = create_app()
     with TestClient(app) as c:
-        r = c.post("/theme", data={"theme": "light"})
-        assert r.status_code == 200
+        r = c.post("/theme", data={"theme": "light"}, follow_redirects=False)
+        assert r.status_code == 303
         assert "tl_towerwatch_theme" in r.cookies
         assert c.cookies["tl_towerwatch_theme"] == "light"
+
+def test_theme_persists_to_config_yaml(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/theme", data={"theme": "light"}, follow_redirects=False)
+        assert r.status_code == 303  # now redirects
+        cfg = (tmp_path / "config.yaml").read_text()
+        assert "theme:" in cfg
+        assert "light" in cfg
+
+def test_theme_validates_input(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/theme", data={"theme": "rainbow"})
+        assert r.status_code == 400
 
 def test_dashboard_renders_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
