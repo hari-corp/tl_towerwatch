@@ -499,10 +499,104 @@ def test_dashboard_filters_and_sort_are_wired(tmp_path, monkeypatch, respx_mock)
         assert any("scope=mine" in h for h in anchor_hrefs)
         assert any("scope=review" in h for h in anchor_hrefs)
         assert any("scope=all" in h for h in anchor_hrefs)
-        assert any("sort=created_desc" in h for h in anchor_hrefs)
+        # Three sort chips total (one per type), each toggling direction.
+        # The created chip points at created_asc when currently
+        # updated_desc (toggle behaviour, not the v1.2.4 two-chip
+        # behaviour).
+        assert any("sort=created_asc" in h for h in anchor_hrefs)
+        assert any("sort=title" in h for h in anchor_hrefs)
+        # The arrow on each chip reflects the *current* direction.
+        # updated_desc (default) → ↓
+        assert "updated ↓" in r.text
         assert 'name="repo"' in r.text
         assert 'name="author"' in r.text
         assert 'name="q"' in r.text
+
+
+def test_dashboard_counters_include_authored_prs_without_review(tmp_path, monkeypatch, respx_mock):
+    """Regression — the v1.2.5 dashboard's counter strip was always 0
+    when the user authored PRs but had no reviews/comments on them,
+    because compute_badges only added the ``pending_response`` badge
+    when there was *inbound* feedback to respond to. Two authored
+    PRs with zero feedback → both badges empty → counter strip at
+    0 across the board.
+
+    After the fix compute_badges also adds ``pending_response`` for
+    authored PRs with no reviews/comments yet, so the "Needs response"
+    counter reflects authored PRs that are sitting without attention.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(User(login="dimh"))
+        s.flush()
+        # Two authored PRs, zero reviews, zero comments.
+        s.add(PullRequest(repo_id=repo.id, number=1, title="one", body="", author_login="dimh", state="open", draft=0, head_sha="a", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
+        s.add(PullRequest(repo_id=repo.id, number=2, title="two", body="", author_login="dimh", state="open", draft=0, head_sha="b", base_ref="main", html_url="https://x/2", created_at="2026-01-02T00:00:00Z", updated_at="2026-01-02T00:00:00Z", cached_at="2026-01-02T00:00:00Z"))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/?scope=all")
+        assert r.status_code == 200
+        # The badge label appears on the cards (one per authored PR).
+        assert r.text.count("pending_response") >= 2
+        # The counter strip renders "needs response" with value 2.
+        # The template applies text-transform: uppercase, but the
+        # underlying HTML keeps the lowercase text so we assert on
+        # the literal "needs response".
+        assert ">needs response<" in r.text
+        # Find the value div immediately after the needs_response label.
+        import re as _re
+        m = _re.search(
+            r'>needs response</div>\s*<div[^>]*>\s*(\d+)',
+            r.text,
+        )
+        assert m is not None, "needs_response counter strip not found"
+        assert int(m.group(1)) == 2
+
+
+def test_dashboard_summarize_button_renders_per_pr(tmp_path, monkeypatch, respx_mock):
+    """When a PR card has no PRSummary row, the dashboard renders a
+    "Generate" button that POSTs to /pr/<o>/<n>/<num>/summarize. The
+    button disappears once the PR has a summary (covered by the
+    existing PRSummary template branch)."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(User(login="dimh"))
+        s.flush()
+        s.add(PullRequest(repo_id=repo.id, number=1, title="feat", body="", author_login="dimh", state="open", draft=0, head_sha="a", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/?scope=all")
+        assert r.status_code == 200
+        # No summary yet → Generate button visible.
+        assert "Sin resumen generado" in r.text
+        assert 'action="/pr/acme/alpha/1/summarize"' in r.text
+        assert "Generar" in r.text
 
 
 def test_dashboard_dropdowns_show_all_repos_and_authors(tmp_path, monkeypatch, respx_mock):

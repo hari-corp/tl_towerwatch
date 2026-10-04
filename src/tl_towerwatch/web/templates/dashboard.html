@@ -58,17 +58,37 @@
     </div>
     <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
       <span>order:</span>
-      {% for sort_id, sort_label in [('updated_desc', 'updated ↓'), ('updated_asc', 'updated ↑'), ('created_desc', 'created ↓'), ('created_asc', 'created ↑'), ('title', 'title A→Z')] %}
+      {# Three sort chips, each toggling between asc/desc on click. The
+         arrow + the ``sort=...`` query param both flip when the user
+         re-clicks the active chip, so there's only one chip per type
+         instead of two. The ``title`` chip has no ascending/descending
+         variant because alphabetical sorting is inherently directional. #}
       {% set scope_part %}{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}{% endset %}
       {% set repo_part %}{% if repo %}&repo={{ repo }}{% endif %}{% endset %}
       {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
       {% set q_part %}{% if q %}&q={{ q }}{% endif %}{% endset %}
-      {% set sort_part %}{% if sort_id != 'updated_desc' %}&sort={{ sort_id }}{% endif %}{% endset %}
-      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ sort_part }}"
-         style="{% if sort == sort_id %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
-        {{ sort_label }}
+      {% set sort_default_part %}{% if sort and sort != 'updated_desc' %}&sort={{ sort }}{% endif %}{% endset %}
+      {% set updated_next %}updated_{% if sort == 'updated_asc' %}desc{% else %}asc{% endif %}{% endset %}
+      {% set updated_label %}updated {% if sort == 'updated_asc' %}↑{% else %}↓{% endif %}{% endset %}
+      {% set updated_part %}{% if updated_next != 'updated_desc' %}&sort={{ updated_next }}{% endif %}{% endset %}
+      {% set created_next %}created_{% if sort == 'created_asc' %}desc{% else %}asc{% endif %}{% endset %}
+      {% set created_label %}created {% if sort == 'created_asc' %}↑{% else %}↓{% endif %}{% endset %}
+      {% set created_part %}{% if created_next != 'updated_desc' %}&sort={{ created_next }}{% endif %}{% endset %}
+      {% set title_next %}{% if sort == 'title' %}updated_desc{% else %}title{% endif %}{% endset %}
+      {% set title_label %}title A→Z{% endset %}
+      {% set title_part %}{% if title_next != 'updated_desc' %}&sort={{ title_next }}{% endif %}{% endset %}
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ updated_part }}"
+         style="{% if sort == 'updated_desc' or sort == 'updated_asc' %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
+        {{ updated_label }}
       </a>
-      {% endfor %}
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ created_part }}"
+         style="{% if sort == 'created_desc' or sort == 'created_asc' %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
+        {{ created_label }}
+      </a>
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ title_part }}"
+         style="{% if sort == 'title' %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
+        {{ title_label }}
+      </a>
     </div>
   </div>
   <form method="get" action="/" style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin:0;">
@@ -136,9 +156,24 @@
           {{ pr.title }}
         </a>
         {% if pr.summary and pr.summary.summary %}
-        <div style="font-size:13px;color:var(--fg);line-height:1.5;margin-bottom:10px;">
-          <span style="background:var(--success);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px;">RESUMEN</span>
+        <div style="font-size:13px;color:var(--fg);line-height:1.5;margin-bottom:10px;padding:8px 10px;background:var(--bg-secondary);border-left:3px solid var(--success);border-radius:4px;">
+          <div style="margin-bottom:4px;">
+            <span style="background:var(--success);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px;font-weight:700;">RESUMEN</span>
+            <span style="color:var(--muted);font-size:10px;">{{ pr.summary.model }} · head: {{ pr.summary.head_sha[:7] }}</span>
+          </div>
           {{ pr.summary.summary }}
+        </div>
+        {% else %}
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;padding:6px 10px;background:var(--bg-secondary);border:1px dashed var(--border);border-radius:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <span>Sin resumen generado.</span>
+          <form method="post"
+                action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/summarize"
+                style="margin:0">
+            <button type="submit"
+                    style="background:var(--accent);color:#fff;border:0;padding:3px 9px;border-radius:4px;font-size:11px;cursor:pointer;">
+              ✨ Generar
+            </button>
+          </form>
         </div>
         {% endif %}
 

@@ -819,6 +819,51 @@ def pr_refresh(owner: str, name: str, number: int):
         sync_one_pr(db, gh, repo, number, llm=llm)
     return RedirectResponse(f"/pr/{owner}/{name}/{number}", status_code=303)
 
+
+@router.post("/pr/{owner}/{name}/{number}/summarize")
+def pr_summarize(owner: str, name: str, number: int):
+    """Generate (or refresh) the AI summary for a single PR.
+
+    Wired to the dashboard's "Generate summary" button on PR cards that
+    have no PRSummary row yet. Diff is fetched live from GitHub so the
+    LLM sees the same source-of-truth the reviewer would. Redirects
+    back to the dashboard on success; bounces to /settings?error=
+    summarize when no LLM key is configured so the user knows why
+    nothing happened instead of getting a silent 500.
+    """
+    from tl_towerwatch.services.pull_requests import (
+        _summarize_diff, _maybe_summarize,
+    )
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    if not settings.llm.anthropic.api_key and not settings.llm.openai.api_key:
+        raise HTTPException(
+            400,
+            "No LLM API key configured. Visit /settings and add an "
+            "Anthropic or OpenAI key under LLM/Agent, then retry."
+        )
+    with db.session() as s:
+        repo = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
+    llm = get_provider(settings)
+    # Fetch the diff outside the persist session so the LLM call (which
+    # may take a few seconds for big PRs) doesn't hold an open SQLAlchemy
+    # session. Files list is needed for the diff cap helper.
+    with GitHubClient(token=token) as gh:
+        files = gh.list_pr_files(owner, name, number)
+        diff_text = _summarize_diff(files, max_files=30, max_lines=2000)
+    with db.session() as s:
+        row = s.execute(select(PullRequest).where(
+            PullRequest.repo_id == repo.id, PullRequest.number == number
+        )).scalar_one()
+        _maybe_summarize(
+            s, row, llm=llm, diff_text=diff_text,
+            repo_label=f"{repo.owner}/{repo.name}",
+        )
+    return RedirectResponse(f"/pr/{owner}/{name}/{number}", status_code=303)
+
 @router.post("/pr/{owner}/{name}/{number}/run-review")
 def pr_run_review(owner: str, name: str, number: int,
                   agent: str = Form(...),

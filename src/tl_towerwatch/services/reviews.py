@@ -55,5 +55,13 @@ def compute_badges(db: Database, login: str, pr: PullRequest) -> list[dict]:
                 badges.append("responded")
             else:
                 badges.append("pending_response")
+        else:
+            # Authored PR with zero reviewer feedback yet — still belongs
+            # in the dashboard's "needs response" counter so the user
+            # has a signal that the PR is sitting without attention.
+            # Without this branch, every authored PR with no reviews
+            # lands in the dashboard with zero badges and the counter
+            # strip sits at 0 across the board.
+            badges.append("pending_response")
 
     return [{"name": n, "color": COLORS[n]} for n in badges]
