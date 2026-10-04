@@ -204,7 +204,27 @@ def _safe_resolve_token(settings: Settings) -> str | RedirectResponse:
 
 
 @router.get("/", response_class=HTMLResponse)
-def index(request: Request):
+def index(request: Request,
+          scope: str = "attention",
+          repo: str = "",
+          author: str = "",
+          q: str = "",
+          sort: str = "updated_desc"):
+    """Dashboard list with full filter + sort wiring (mock parity).
+
+    Query params:
+    - scope: "attention" (default — needs response + awaiting my review),
+      "mine" (your PRs), "review" (review-requested), "all" (everything
+      in the watched repos regardless of authorship/reviewer state).
+    - repo: "owner/name" — restrict to one repo. Empty = all repos.
+    - author: GitHub login — restrict to PRs authored by this user.
+    - q: case-insensitive substring match against ``pr.title``.
+    - sort: "updated_desc" (default), "created_desc", "title".
+
+    Filter state is passed back to the template so each filter UI element
+    can highlight its active value, build cross-filter preserving links for
+    the sort/tab chips, and seed the search input.
+    """
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
@@ -220,9 +240,25 @@ def index(request: Request):
     if isinstance(token, RedirectResponse):
         return token
     login = "dimh"  # TODO: derive from auth in Task 18
-    prs = list_prs_for_dashboard(db, login=login, scope_filter="mine_and_review")
+    # Scope "attention" isn't a primitive of list_prs_for_dashboard; it
+    # means "needs response + awaiting my review" which is the union of
+    # `mine` and `review`. Resolve the two scopes, then merge below.
+    raw_scope = scope if scope in ("mine", "review", "all") else None
+    if scope == "attention":
+        mine_prs = list_prs_for_dashboard(db, login=login, scope_filter="mine")
+        review_prs = list_prs_for_dashboard(db, login=login, scope_filter="review")
+        seen: set[int] = set()
+        prs: list[PullRequest] = []
+        for p in mine_prs + review_prs:
+            if p.id in seen:
+                continue
+            seen.add(p.id)
+            prs.append(p)
+    else:
+        prs = list_prs_for_dashboard(db, login=login, scope_filter=raw_scope)
     # PullRequest only carries repo_id (FK); the template needs owner/name to
-    # build detail-page links and per-PR action buttons. Resolve once here.
+    # build detail-page links and per-PR action buttons. Resolve owner/name
+    # BEFORE the row-level filters so ``?repo=owner/name`` can match.
     pr_ids: list[int] = [p.id for p in prs]
     reviewers_by_pr: dict[int, list[dict]] = {pid: [] for pid in pr_ids}
     summary_by_pr: dict[int, PRSummary] = {}
@@ -274,13 +310,34 @@ def index(request: Request):
             "color": color,
         })
     for pr in prs:
-        repo = repos_by_id.get(pr.repo_id)
-        pr.repo_owner = repo.owner if repo else ""
-        pr.repo_name = repo.name if repo else ""
+        repo_row = repos_by_id.get(pr.repo_id)
+        pr.repo_owner = repo_row.owner if repo_row else ""
+        pr.repo_name = repo_row.name if repo_row else ""
         # Attached as ad-hoc attributes for the template; SQLAlchemy ORM
         # instances allow this without persisting anything new.
         pr.reviewers = reviewers_by_pr.get(pr.id, [])
         pr.summary = summary_by_pr.get(pr.id)
+    # Apply the row-level filters that aren't covered by the scope: repo,
+    # author, and title substring search. Run after owner/name resolution so
+    # ``?repo=owner/name`` can match on the freshly-attached attributes.
+    if repo:
+        owner_filter, _, name_filter = repo.partition("/")
+        prs = [p for p in prs
+               if getattr(p, "repo_owner", "") == owner_filter
+               and getattr(p, "repo_name", "") == name_filter]
+    if author:
+        prs = [p for p in prs if (p.author_login or "") == author]
+    if q:
+        needle = q.lower()
+        prs = [p for p in prs if needle in (p.title or "").lower()]
+    # Sort: list_prs_for_dashboard already sorts by updated_at desc; we
+    # re-sort to honour the user's choice.
+    if sort == "updated_desc":
+        prs.sort(key=lambda p: p.updated_at, reverse=True)
+    elif sort == "created_desc":
+        prs.sort(key=lambda p: p.created_at, reverse=True)
+    elif sort == "title":
+        prs.sort(key=lambda p: (p.title or "").lower())
     # Status counters per spec §5.1. `compute_badges` uses its own names
     # (`pending_response`, `approved`, ...) that don't 1:1 match the spec
     # counter names (`needs_response`, `ready_to_merge`, ...), so translate
@@ -306,6 +363,12 @@ def index(request: Request):
         {"nav": "home", "theme": _theme(request),
          "prs": prs, "badges_by_pr": badges_by_pr,
          "login": login, "counts": counts,
+         # Filter + sort state, echoed back so the template can highlight
+         # the active tab/sort/select and build cross-filter preserving
+         # links for the tab and sort chips.
+         "scope": scope, "repo": repo, "author": author, "q": q, "sort": sort,
+         "all_repos": list(repos_by_id.values()),
+         "all_authors": sorted({p.author_login for p in prs if p.author_login}),
          **_user_context(db, login)})
 
 @router.post("/refresh-all")

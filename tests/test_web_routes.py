@@ -402,6 +402,109 @@ def test_settings_matches_mock_layout(tmp_path, monkeypatch):
         assert "Restaurar defaults" in body
 
 
+def test_dashboard_filters_and_sort_are_wired(tmp_path, monkeypatch, respx_mock):
+    """Regression — the v1.2.0 dashboard rebuild left the filter bar,
+    sort chips, and search box as visual placeholders. Tabs were
+    `<span>` instead of `<a>`, selects had no `name=`, the order chip
+    was static text. After the fix each control writes to the URL
+    and the server applies the filter.
+
+    Exercises every code path: scope switch, repo filter, author
+    filter, title substring search, and sort order.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    # 2 repos, 3 PRs across them, 2 distinct authors.
+    repo_a = add_repo(db, "acme", "alpha")
+    repo_b = add_repo(db, "acme", "beta")
+    with db.session() as s:
+        for login in ("dimh", "alice"):
+            s.add(User(login=login))
+        s.flush()
+        s.add(PullRequest(repo_id=repo_a.id, number=1, title="feat: alpha thing", body="", author_login="dimh", state="open", draft=0, head_sha="abc", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-02-01T00:00:00Z", cached_at="2026-02-01T00:00:00Z"))
+        s.add(PullRequest(repo_id=repo_a.id, number=2, title="fix: alpha bug", body="", author_login="alice", state="open", draft=0, head_sha="def", base_ref="main", html_url="https://x/2", created_at="2026-01-15T00:00:00Z", updated_at="2026-02-10T00:00:00Z", cached_at="2026-02-10T00:00:00Z"))
+        s.add(PullRequest(repo_id=repo_b.id, number=1, title="docs: beta readme", body="", author_login="dimh", state="open", draft=0, head_sha="ghi", base_ref="main", html_url="https://x/3", created_at="2026-02-01T00:00:00Z", updated_at="2026-02-15T00:00:00Z", cached_at="2026-02-15T00:00:00Z"))
+    app = create_app()
+    with TestClient(app) as c:
+        # Default scope = attention = mine ∪ review. dimh authored 2 PRs
+        # so both should show.
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "feat: alpha thing" in r.text
+        assert "docs: beta readme" in r.text
+        # alice's PR is not in scope by default.
+        assert "fix: alpha bug" not in r.text
+
+        # Switch to scope=all: now the alice PR shows.
+        r = c.get("/?scope=all")
+        assert r.status_code == 200
+        assert "fix: alpha bug" in r.text
+        assert "feat: alpha thing" in r.text
+        assert "docs: beta readme" in r.text
+
+        # Repo filter: only acme/alpha PRs.
+        r = c.get("/?scope=all&repo=acme/alpha")
+        assert r.status_code == 200
+        assert "feat: alpha thing" in r.text
+        assert "fix: alpha bug" in r.text
+        assert "docs: beta readme" not in r.text
+
+        # Author filter: only alice's PR.
+        r = c.get("/?scope=all&author=alice")
+        assert r.status_code == 200
+        assert "fix: alpha bug" in r.text
+        assert "feat: alpha thing" not in r.text
+        assert "docs: beta readme" not in r.text
+
+        # Title substring search (case-insensitive).
+        r = c.get("/?scope=all&q=README")
+        assert r.status_code == 200
+        assert "docs: beta readme" in r.text
+        assert "feat: alpha thing" not in r.text
+
+        # Combined filters: repo=acme/alpha AND author=alice.
+        r = c.get("/?scope=all&repo=acme/alpha&author=alice")
+        assert r.status_code == 200
+        assert "fix: alpha bug" in r.text
+        assert "feat: alpha thing" not in r.text
+        assert "docs: beta readme" not in r.text
+
+        # Sort by title (alphabetical, case-insensitive):
+        # "docs: beta readme" < "feat: alpha thing" < "fix: alpha bug".
+        r = c.get("/?scope=all&sort=title")
+        body = r.text
+        idx_readme = body.find("docs: beta readme")
+        idx_thing = body.find("feat: alpha thing")
+        idx_bug = body.find("fix: alpha bug")
+        assert 0 < idx_readme < idx_thing < idx_bug
+
+        # Filter UI is visible (anchors, not <span>).
+        # The hrefs are built dynamically and include the current sort
+        # state, so assert the `scope=mine|review|all` query params
+        # appear in anchor `href` attributes rather than exact URL
+        # strings.
+        import re as _re
+        anchor_hrefs = _re.findall(r'href="\/\?[^"]+"', r.text)
+        assert any("scope=mine" in h for h in anchor_hrefs)
+        assert any("scope=review" in h for h in anchor_hrefs)
+        assert any("scope=all" in h for h in anchor_hrefs)
+        assert any("sort=created_desc" in h for h in anchor_hrefs)
+        assert 'name="repo"' in r.text
+        assert 'name="author"' in r.text
+        assert 'name="q"' in r.text
+
+
 def test_settings_renders_when_no_user_yet(tmp_path, monkeypatch):
     """Task 19: when no User row is seeded (first-run state, before any
     GitHub sync has populated the users table), the settings page must

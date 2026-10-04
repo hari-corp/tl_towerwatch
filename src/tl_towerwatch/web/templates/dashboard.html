@@ -34,33 +34,76 @@
   {% endfor %}
 </div>
 
-<!-- Filter bar — visual placeholders only. Server-side filtering still
-     runs through scope_filter="mine_and_review" (see routes.index); the
-     dropdowns / search box render so the layout matches the v2 mock but
-     don't yet wire to the request. They'll be wired in a follow-up task. -->
+<!-- Filter bar — fully wired to query params. Each chip is an anchor that
+     preserves the rest of the filter state via query-string composition, so
+     toggling the scope keeps the user's repo/author/search/sort selections.
+     The dropdowns and search box live inside a single <form method="get">
+     that submits on change for the selects and on Enter for the search
+     input; hidden inputs mirror the other filter values so submitting one
+     input doesn't reset the rest. -->
 <div style="display:flex;flex-direction:column;gap:8px;padding:10px 20px;border-bottom:1px solid var(--border);">
-  <div style="display:flex;align-items:center;justify-content:space-between;">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
     <div style="display:flex;gap:4px;font-size:13px;">
-      <span style="background:var(--code-bg);color:var(--fg);padding:5px 12px;border-radius:5px;font-weight:600;">📌 Attention ({{ prs|length }})</span>
-      <span style="color:var(--muted);padding:5px 12px;">My PRs</span>
-      <span style="color:var(--muted);padding:5px 12px;">Review-requested</span>
-      <span style="color:var(--muted);padding:5px 12px;">All open</span>
+      {% for tab_id, tab_label in [('attention', '📌 Attention'), ('mine', 'My PRs'), ('review', 'Review-requested'), ('all', 'All open')] %}
+      {% set scope_part %}scope={{ tab_id }}{% endset %}
+      {% set repo_part %}{% if repo %}&repo={{ repo }}{% endif %}{% endset %}
+      {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
+      {% set q_part %}{% if q %}&q={{ q }}{% endif %}{% endset %}
+      {% set sort_part %}{% if sort and sort != 'updated_desc' %}&sort={{ sort }}{% endif %}{% endset %}
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ sort_part }}"
+         style="{% if scope == tab_id %}background:var(--code-bg);color:var(--fg);font-weight:600;{% else %}color:var(--muted);{% endif %}padding:5px 12px;border-radius:5px;text-decoration:none;">
+        {{ tab_label }}{% if scope == tab_id %} ({{ prs|length }}){% endif %}
+      </a>
+      {% endfor %}
     </div>
     <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
       <span>order:</span>
-      <span style="color:var(--accent);">updated ↓</span>
+      {% for sort_id, sort_label in [('updated_desc', 'updated ↓'), ('created_desc', 'created ↓'), ('title', 'title A→Z')] %}
+      {% set scope_part %}{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}{% endset %}
+      {% set repo_part %}{% if repo %}&repo={{ repo }}{% endif %}{% endset %}
+      {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
+      {% set q_part %}{% if q %}&q={{ q }}{% endif %}{% endset %}
+      {% set sort_part %}{% if sort_id != 'updated_desc' %}&sort={{ sort_id }}{% endif %}{% endset %}
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ sort_part }}"
+         style="{% if sort == sort_id %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
+        {{ sort_label }}
+      </a>
+      {% endfor %}
     </div>
   </div>
-  <div style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);">
+  <form method="get" action="/" style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin:0;">
+    {# Hidden mirrors preserve scope + sort when the user changes repo/author/q. #}
+    <input type="hidden" name="scope" value="{{ scope }}">
+    <input type="hidden" name="sort" value="{{ sort }}">
     <span>Filter by:</span>
-    <select style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:12px;">
-      <option>Repo: all</option>
+    <select name="repo" onchange="this.form.submit()"
+            style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:12px;">
+      <option value="">Repo: all</option>
+      {% for opt in all_repos %}
+        {% set opt_key = opt.owner ~ '/' ~ opt.name %}
+        <option value="{{ opt_key }}" {% if repo == opt_key %}selected{% endif %}>{{ opt_key }}</option>
+      {% endfor %}
     </select>
-    <select style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:12px;">
-      <option>Author: any</option>
+    <select name="author" onchange="this.form.submit()"
+            style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:12px;">
+      <option value="">Author: any</option>
+      {% for opt in all_authors %}
+        <option value="{{ opt }}" {% if author == opt %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
     </select>
-    <input placeholder="🔎 search title..." style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 10px;border-radius:5px;font-size:12px;flex:1;max-width:240px;">
-  </div>
+    <input name="q" value="{{ q }}" placeholder="🔎 search title..."
+           style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 10px;border-radius:5px;font-size:12px;flex:1;max-width:240px;">
+    <button type="submit"
+            style="background:var(--accent);color:#fff;border:0;padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+      Apply
+    </button>
+    {% if repo or author or q %}
+    <a href="/?{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}"
+       style="color:var(--muted);text-decoration:none;font-size:12px;">
+      ✕ clear filters
+    </a>
+    {% endif %}
+  </form>
 </div>
 
 <!-- PR cards list -->
