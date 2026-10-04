@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import secrets
+import threading
+import time
 import webbrowser
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -103,7 +106,8 @@ def _persist_env(settings: Settings) -> None:
 
 def start_callback_server(port: int, timeout: int = 120) -> str:
     """Tiny HTTP server that captures the ``?code=`` query param from the
-    OAuth redirect and returns it. Blocks until a single request arrives.
+    OAuth redirect and returns it. Blocks until a single request arrives
+    or ``timeout`` seconds elapse, at which point it raises ``TimeoutError``.
 
     Used by ``complete_oauth_flow``; kept top-level and patchable so tests
     can stub it without binding to ``127.0.0.1``.
@@ -111,9 +115,10 @@ def start_callback_server(port: int, timeout: int = 120) -> str:
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     code_holder = {"code": None}
+    deadline = time.time() + timeout
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 — stdlib name
+        def do_GET(self):  # stdlib name
             q = parse_qs(urlparse(self.path).query)
             code_holder["code"] = q.get("code", [None])[0]
             self.send_response(200)
@@ -125,9 +130,13 @@ def start_callback_server(port: int, timeout: int = 120) -> str:
             pass
 
     httpd = HTTPServer(("127.0.0.1", port), _Handler)
-    httpd.timeout = timeout
-    while code_holder["code"] is None:
-        httpd.handle_request()
+    try:
+        while code_holder["code"] is None and time.time() < deadline:
+            httpd.handle_request()
+    finally:
+        httpd.server_close()
+    if code_holder["code"] is None:
+        raise TimeoutError(f"Callback server timed out after {timeout}s")
     return code_holder["code"]
 
 
@@ -138,16 +147,26 @@ def complete_oauth_flow(
     *,
     port: int = 8765,
     host_alias: str | None = None,
-    open_browser=webbrowser.open,
+    open_browser=None,
+    start_server=None,
 ) -> tuple[str, str]:
-    """Run the full OAuth dance: start callback, open browser, exchange code.
+    """Run the full OAuth dance: build the authorize URL, start the callback
+    server in a background thread, open the browser so the user can authorize,
+    wait for the callback to deliver the ``code``, then exchange it for tokens.
 
     Returns ``(access_token, refresh_token)``. ``refresh_token`` may be empty
     when GitHub does not rotate it (older OAuth Apps).
-    """
-    import secrets
 
-    code = start_callback_server(port)
+    ``open_browser`` and ``start_server`` default to ``webbrowser.open`` and
+    :func:`start_callback_server` respectively; tests can inject fakes.
+    """
+    if start_server is None:
+        start_server = start_callback_server
+    if open_browser is None:
+        open_browser = webbrowser.open
+
+    # 1. Build the authorize URL FIRST so the browser has somewhere to send
+    #    the user before anything else blocks.
     state = secrets.token_urlsafe(16)
     authorize_url = (
         GITHUB_OAUTH_AUTHORIZE
@@ -161,7 +180,38 @@ def complete_oauth_flow(
             }
         )
     )
+
+    # 2. Start the callback server in a background thread so it's already
+    #    listening on the port BEFORE we open the browser (otherwise the
+    #    GitHub redirect would hit a closed port and the CLI would hang).
+    code_holder: dict[str, object] = {"code": None, "error": None}
+
+    def _server() -> None:
+        try:
+            code_holder["code"] = start_server(port)
+        except Exception as exc:  # noqa: BLE001 — re-raised after t.join()
+            code_holder["error"] = exc
+
+    t = threading.Thread(target=_server, daemon=True)
+    t.start()
+    # Tiny sleep so the server has time to bind the port before the browser
+    # resolves the redirect target.
+    time.sleep(0.1)
+
+    # 3. Open the browser (non-blocking — the actual auth happens in the user's
+    #    browser, then GitHub redirects to our local server).
     open_browser(authorize_url)
+
+    # 4. Wait for the callback. ``start_server`` enforces its own timeout and
+    #    raises ``TimeoutError`` if no request arrives in time.
+    t.join()
+    if code_holder["error"] is not None:
+        raise code_holder["error"]
+    code = code_holder["code"]
+    if code is None:
+        raise TimeoutError("OAuth callback did not return a code")
+
+    # 5. Exchange the code for access + refresh tokens.
     r = httpx.post(
         GITHUB_OAUTH_URL,
         data={
