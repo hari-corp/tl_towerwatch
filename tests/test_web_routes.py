@@ -1230,3 +1230,106 @@ def test_dashboard_matches_mock_layout(tmp_path, monkeypatch, respx_mock):
         assert "needs response" in body.lower()
         assert "changes requested" in body.lower()
         assert "ready to merge" in body.lower()
+
+
+def test_settings_save_buttons_present(tmp_path, monkeypatch, respx_mock):
+    """Regression — the v1.2.0 mock rebuild wrapped the auth and LLM
+    inputs in <form action="/settings/auth/save"> and
+    <form action="/settings/llm/save"> but never added a submit button
+    inside either form, so clicking through the mock-equivalent UI
+    silently no-op'd. After the fix each form carries its own Save
+    button and visible input fields, so the user can actually save."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_OLD\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/settings")
+        assert r.status_code == 200
+        body = r.text
+        # Both forms have a submit button
+        assert 'action="/settings/auth/save"' in body
+        assert 'action="/settings/llm/save"' in body
+        # Buttons are inside the rendered HTML; check the inner text
+        # rather than the surrounding tags because indentation adds
+        # whitespace between the `<button ...>` and the label.
+        assert "Guardar Auth" in body
+        assert "Guardar LLM" in body
+        assert body.count('type="submit"') >= 2
+        # Visible inputs the user actually edits
+        assert 'name="github_token_edit"' in body
+        assert 'name="anthropic_api_key_edit"' in body
+        assert 'name="provider"' in body
+
+
+def test_settings_auth_save_roundtrip(tmp_path, monkeypatch, respx_mock):
+    """Submitting the auth form with a new PAT actually rewrites
+    TOWERWATCH_GITHUB_TOKEN in .env, and the edit-or-current semantics
+    preserve the previous value when the edit field is blank."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_OLD\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # Submit a new token via the _edit field.
+        r = c.post("/settings/auth/save",
+                   data={"github_token_edit": "ghp_NEW1234",
+                         "github_oauth_client_id_edit": "",
+                         "github_oauth_client_secret_edit": ""},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        env = (tmp_path / ".env").read_text()
+        assert "TOWERWATCH_GITHUB_TOKEN=ghp_NEW1234" in env
+
+        # Submitting with empty edit must preserve the current token.
+        r2 = c.post("/settings/auth/save",
+                    data={"github_token_edit": "",
+                          "github_oauth_client_id_edit": "",
+                          "github_oauth_client_secret_edit": ""},
+                    follow_redirects=False)
+        assert r2.status_code == 303
+        env2 = (tmp_path / ".env").read_text()
+        assert "TOWERWATCH_GITHUB_TOKEN=ghp_NEW1234" in env2
+
+
+def test_settings_llm_save_roundtrip(tmp_path, monkeypatch, respx_mock):
+    """Submitting the LLM form switches default_provider and rewrites
+    the chosen API key in .env, blank edits leave values untouched."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text(
+        "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-OLD\n"
+        "TOWERWATCH_LLM_DEFAULT_PROVIDER=anthropic\n"
+    )
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # Switch to OpenAI with a new key.
+        r = c.post("/settings/llm/save",
+                   data={"provider": "openai",
+                         "openai_api_key_edit": "sk-NEW",
+                         "anthropic_api_key_edit": "",
+                         "ollama_base_url_edit": ""},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        env = (tmp_path / ".env").read_text()
+        # The persist helper writes TOWERWATCH_LLM_PROVIDER (not the
+        # legacy _DEFAULT_PROVIDER key).
+        assert "TOWERWATCH_LLM_PROVIDER=openai" in env
+        assert "TOWERWATCH_OPENAI_API_KEY=sk-NEW" in env
+        # Blank anthropic edit must keep the old anthropic key.
+        assert "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-OLD" in env

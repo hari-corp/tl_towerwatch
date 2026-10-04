@@ -821,13 +821,22 @@ def settings_page(request: Request):
 @router.post("/settings/auth/save")
 def settings_auth_save(github_token: str = Form(""),
                        github_oauth_client_id: str = Form(""),
-                       github_oauth_client_secret: str = Form("")):
+                       github_oauth_client_secret: str = Form(""),
+                       github_token_edit: str = Form(""),
+                       github_oauth_client_id_edit: str = Form(""),
+                       github_oauth_client_secret_edit: str = Form("")):
     settings = load_settings()
+    # The settings page submits *two* fields per credential: the hidden
+    # current value (carries the previous token when the user didn't touch
+    # it) and an editable input (`*_edit`) that the user actually fills
+    # in. We honour `_edit` when non-empty and fall back to the hidden
+    # current value when blank — that way an empty edit box is a no-op
+    # and the user never accidentally overwrites a valid token.
     _persist_auth_keys(
         settings.data_dir / ".env",
-        github_token=github_token,
-        github_oauth_client_id=github_oauth_client_id,
-        github_oauth_client_secret=github_oauth_client_secret,
+        github_token=github_token_edit or github_token,
+        github_oauth_client_id=github_oauth_client_id_edit or github_oauth_client_id,
+        github_oauth_client_secret=github_oauth_client_secret_edit or github_oauth_client_secret,
     )
     return RedirectResponse("/settings", status_code=303)
 
@@ -835,14 +844,20 @@ def settings_auth_save(github_token: str = Form(""),
 def settings_llm_save(provider: str = Form("anthropic"),
                       anthropic_api_key: str = Form(""),
                       openai_api_key: str = Form(""),
-                      ollama_base_url: str = Form("")):
+                      ollama_base_url: str = Form(""),
+                      anthropic_api_key_edit: str = Form(""),
+                      openai_api_key_edit: str = Form(""),
+                      ollama_base_url_edit: str = Form("")):
     settings = load_settings()
+    # Mirror the auth-form "edit-or-current" semantics: the hidden field
+    # carries the previous value, the visible `_edit` input is what the
+    # user actually changes. Empty edit = no change.
     _persist_llm_keys(
         settings.data_dir / ".env",
         provider=provider,
-        anthropic_api_key=anthropic_api_key,
-        openai_api_key=openai_api_key,
-        ollama_base_url=ollama_base_url,
+        anthropic_api_key=anthropic_api_key_edit or anthropic_api_key,
+        openai_api_key=openai_api_key_edit or openai_api_key,
+        ollama_base_url=ollama_base_url_edit or ollama_base_url,
     )
     return RedirectResponse("/settings", status_code=303)
 

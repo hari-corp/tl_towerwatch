@@ -69,6 +69,58 @@
       <input type="hidden" name="github_oauth_client_id" value="{{ settings.github_oauth_client_id or '' }}">
       <input type="hidden" name="github_oauth_client_secret" value="{{ settings.github_oauth_client_secret or '' }}">
 
+      {# Editable PAT input — replacing the previous "only a chip" approach
+         so the form actually saves when the user changes the token. The
+         placeholder shows the last 4 so the user can confirm they're not
+         about to overwrite an existing valid token by accident. #}
+      {% if auth_mode == 'pat' %}
+      <div style="margin-bottom:14px;">
+        <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
+          Personal Access Token
+        </label>
+        <input name="github_token_edit" type="password"
+               placeholder="ghp_…{% if token_last4 %}(actual termina en ...{{ token_last4 }}){% endif %}"
+               autocomplete="off"
+               style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+        <div style="color:var(--muted);font-size:11px;margin-top:4px;">
+          Dejá en blanco para no cambiar. Se guarda en <code>.env</code> como
+          <code>TOWERWATCH_GITHUB_TOKEN</code>.
+        </div>
+      </div>
+      {% endif %}
+
+      {# Editable OAuth credentials — visible inputs that submit alongside
+         the radio. #}
+      {% if auth_mode == 'oauth' %}
+      <div style="margin-bottom:14px;display:grid;gap:10px;">
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">OAuth client_id</label>
+          <input name="github_oauth_client_id_edit"
+                 value="{{ settings.github_oauth_client_id or '' }}"
+                 placeholder="Iv1.abc123…"
+                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">OAuth client_secret</label>
+          <input name="github_oauth_client_secret_edit" type="password"
+                 placeholder="{% if settings.github_oauth_client_secret %}(actual: configurado){% else %}gho_…{% endif %}"
+                 autocomplete="off"
+                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+        </div>
+        <div style="color:var(--muted);font-size:11px;">
+          Dejá en blanco para no cambiar. Callback URL:
+          <code>http://localhost:8765/auth/callback</code>.
+        </div>
+      </div>
+      {% endif %}
+
+      <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+        <button type="submit"
+                style="background:var(--success);color:#fff;border:0;padding:8px 18px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
+          Guardar Auth
+        </button>
+      </div>
+
       {# Mode selector ---------------------------------------------------- #}
       <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
         Modo de autenticación
@@ -161,6 +213,39 @@
       <input type="hidden" name="anthropic_api_key" value="{{ settings.llm.anthropic.api_key or '' }}">
       <input type="hidden" name="openai_api_key"     value="{{ settings.llm.openai.api_key or '' }}">
       <input type="hidden" name="ollama_base_url"    value="{{ settings.llm.ollama.base_url or '' }}">
+
+      {# Editable API key inputs per provider. Hidden "_edit" mirrors on
+         submit keeps the original semantics — empty edit = no change. #}
+      <div style="display:grid;gap:10px;margin-bottom:14px;">
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Anthropic API key</label>
+          <input name="anthropic_api_key_edit" type="password"
+                 placeholder="sk-ant-…{% if anthropic_key_last4 %}(actual termina en ...{{ anthropic_key_last4 }}){% endif %}"
+                 autocomplete="off"
+                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">OpenAI API key</label>
+          <input name="openai_api_key_edit" type="password"
+                 placeholder="sk-…(dejá en blanco para no cambiar)"
+                 autocomplete="off"
+                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Ollama base URL</label>
+          <input name="ollama_base_url_edit"
+                 value="{{ settings.llm.ollama.base_url or '' }}"
+                 placeholder="http://localhost:11434"
+                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+        </div>
+      </div>
+
+      <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+        <button type="submit"
+                style="background:var(--success);color:#fff;border:0;padding:8px 18px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
+          Guardar LLM
+        </button>
+      </div>
 
       <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
         Provider por defecto
