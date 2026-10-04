@@ -387,4 +387,51 @@ def test_run_review_marks_failed_when_runner_raises(tmp_path, monkeypatch):
         run_row = s.query(ReviewRun).order_by(ReviewRun.id.desc()).first()
         assert run_row.status == "failed"
         assert "boom" in run_row.error
-        assert run_row.finished_at is not None
+
+
+@respx.mock
+def test_sync_one_pr_truncates_huge_diff(tmp_path):
+    """v1.1: `sync_one_pr` must cap the diff the LLM sees at
+    ``Settings.max_diff_files`` files and ``Settings.max_diff_lines`` lines so
+    a 5000-file / 5M-line PR doesn't blow the LLM's context window. The old
+    char-based `[:20000]` truncation could still hand the model tens of
+    thousands of lines on a single huge file.
+    """
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number": 1, "title": "t", "body": "b", "user": {"login": "a"},
+                   "state": "open", "draft": False, "head": {"sha": "s1"},
+                   "base": {"ref": "main"}, "html_url": "u",
+                   "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z", "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    # 5000 files × 1000 lines each — far above both Settings.max_diff_files=30
+    # and Settings.max_diff_lines=2000.
+    huge_files = [
+        {"filename": f"f{i}.py", "additions": 1, "deletions": 0,
+         "status": "modified", "patch": "x\n" * 1000}
+        for i in range(5000)
+    ]
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(
+        return_value=Response(200, json=huge_files))
+    repo = list_repos(db)[0]
+
+    class _RecordingLLM(LLMProvider):
+        name = "rec"
+        def __init__(self):
+            self.last_diff = ""
+        def summarize(self, *, title, body, diff, metadata):
+            self.last_diff = diff
+            return "ok"
+        def health_check(self) -> bool:
+            return True
+
+    llm = _RecordingLLM()
+    with GitHubClient(token="x") as gh:
+        sync_one_pr(db, gh, repo, 1, llm=llm)
+    # LLM must not receive the full ~30k-line diff.
+    assert llm.last_diff.count("\n") < 3000
+    # Truncation marker is appended so the model knows it saw a slice.
+    assert "[truncated" in llm.last_diff

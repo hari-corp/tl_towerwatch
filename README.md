@@ -1,8 +1,18 @@
-# tl_towerwatch
+# tl_towerwatch (v1.1)
+
+![tests](https://img.shields.io/badge/tests-78%20passing-brightgreen)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![license](https://img.shields.io/badge/license-Proprietary-red)
 
 Local PR dashboard + agent reviewer for tech leads. Tracks your GitHub PRs,
 shows you what needs attention, and triggers AI code reviews with pluggable
 skills (superpowers, ponytail, …).
+
+**v1.1 highlights:** `tl_towerwatch init` wizard, OAuth initial flow, PR
+detail tabs, theme persistence, performance indexes, and diff-size
+limitations on the LLM summariser — see the
+[plan](docs/superpowers/plans/2026-10-04-tl-towerwatch-v1.1.md) for the
+full changelog.
 
 ## Quick start (uv tool)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tl_towerwatch.config import Settings, load_settings
 from tl_towerwatch.db.database import Database
 from tl_towerwatch.db.models import (
     PRSummary,
@@ -117,9 +118,20 @@ def _replace_reviews_and_comments(
         )
 
 
-def _summarize_diff(files, *, max_files: int = 30, max_chars: int = 20000) -> str:
-    """Concatenate file patches up to a budget so the LLM sees the salient diff."""
-    return "\n".join((f.patch or "") for f in files[:max_files])[:max_chars]
+def _summarize_diff(files, *, max_files: int, max_lines: int) -> str:
+    """Concatenate file patches, truncating to ``max_files`` files and
+    ``max_lines`` lines so the LLM sees the salient diff without exceeding
+    its context window. Replaces the old char-based `[:20000]` cap that could
+    still send tens of thousands of lines when a single file was huge
+    (v1.1 / Task 12).
+    """
+    diff_parts = [f.patch for f in files[:max_files] if f.patch]
+    diff_text = "\n".join(diff_parts)
+    lines = diff_text.splitlines()
+    if len(lines) > max_lines:
+        diff_text = "\n".join(lines[:max_lines])
+        diff_text += f"\n... [truncated to {max_lines} lines of {len(lines)} total]\n"
+    return diff_text
 
 
 def _maybe_summarize(
@@ -162,10 +174,14 @@ def _maybe_summarize(
 
 
 def sync_repo(
-    db: Database, gh: GitHubClient, repo: Repo, *, llm: LLMProvider | None = None
+    db: Database, gh: GitHubClient, repo: Repo, *,
+    llm: LLMProvider | None = None,
+    settings: Settings | None = None,
 ) -> int:
     count = 0
     repo_label = f"{repo.owner}/{repo.name}"
+    if settings is None:
+        settings = load_settings()
     with db.session() as s:
         for pr in gh.list_open_prs(repo.owner, repo.name):
             row = _upsert_pr(s, repo.id, pr)
@@ -175,7 +191,11 @@ def sync_repo(
                 files = gh.list_pr_files(repo.owner, repo.name, pr.number)
                 _maybe_summarize(
                     s, row, llm=llm,
-                    diff_text=_summarize_diff(files),
+                    diff_text=_summarize_diff(
+                        files,
+                        max_files=settings.max_diff_files,
+                        max_lines=settings.max_diff_lines,
+                    ),
                     repo_label=repo_label,
                 )
             count += 1
@@ -197,10 +217,17 @@ def sync_one_pr(
     number: int,
     *,
     llm: LLMProvider | None = None,
+    settings: Settings | None = None,
 ) -> PullRequest:
     diff_text = ""
     if llm is not None:
-        diff_text = _summarize_diff(gh.list_pr_files(repo.owner, repo.name, number))
+        if settings is None:
+            settings = load_settings()
+        diff_text = _summarize_diff(
+            gh.list_pr_files(repo.owner, repo.name, number),
+            max_files=settings.max_diff_files,
+            max_lines=settings.max_diff_lines,
+        )
     with db.session() as s:
         pr = gh.get_pr(repo.owner, repo.name, number)
         row = _upsert_pr(s, repo.id, pr)

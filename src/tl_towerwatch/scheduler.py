@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timezone  # noqa: F401 — deferred to final review
 
 from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import Settings
@@ -58,7 +57,7 @@ class RefreshScheduler:
             if now - last_run.get(repo.id, 0) < interval:
                 continue
             try:
-                sync_repo(db, gh, repo, llm=llm)
+                sync_repo(db, gh, repo, llm=llm, settings=self._settings)
             except Exception as e:  # noqa: BLE001 — top-level refresh error handler
                 with db.session() as s:
                     r = s.get(Repo, repo.id)

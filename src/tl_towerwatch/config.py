@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     theme: Literal["dark", "light", "system"] = "dark"
     refresh_interval_seconds: int = 300
+    # v1.1 (Task 12): cap the diff handed to the LLM for PR summarisation so
+    # a single 5,000-file PR can't blow the model's context window. The old
+    # char-based `[:20000]` truncation could still send tens of thousands of
+    # lines when a single file was huge.
+    max_diff_lines: int = 2000
+    max_diff_files: int = 30
 
     llm: LLMCfg = Field(default_factory=LLMCfg)
     auth: AuthCfg = Field(default_factory=AuthCfg)

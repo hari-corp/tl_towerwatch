@@ -443,8 +443,12 @@ def _persist_llm_keys(env_path: Path, provider: str, anthropic_api_key: str,
                       openai_api_key: str, ollama_base_url: str) -> None:
     """Persist LLM-form values to .env, only touching the LLM keys.
 
-    Replaces any existing lines for the keys this helper owns so a stale value
-    can't leak through, but never strips keys owned by other helpers.
+    Empty form values are treated as "no change" so submitting a partial LLM
+    form (e.g. only the Anthropic key) cannot wipe secrets the user didn't
+    intend to touch — mirrors `_persist_auth_keys` and the regression test
+    `test_settings_llm_save_does_not_wipe_auth_fields`. Non-empty form
+    values replace any existing line for that key. Keys owned by other
+    helpers are never touched.
     """
     import os
     updates = {
@@ -455,8 +459,22 @@ def _persist_llm_keys(env_path: Path, provider: str, anthropic_api_key: str,
     }
     keys = set(updates.keys())
     lines = env_path.read_text().splitlines() if env_path.exists() else []
+    # Snapshot existing values for the keys this helper owns so we can
+    # preserve them when the corresponding form field arrives empty.
+    existing = {}
+    for ln in lines:
+        for k in keys:
+            if ln.startswith(k + "="):
+                existing[k] = ln[len(k) + 1:]
+                break
+    # Drop any line this helper owns; we'll re-emit them below.
     new_lines = [ln for ln in lines if not any(ln.startswith(k + "=") for k in keys)]
-    new_lines += [f"{k}={v}" for k, v in updates.items() if v]
+    for k, v in updates.items():
+        if v:
+            new_lines.append(f"{k}={v}")
+        elif k in existing:
+            # Empty form value → keep the prior secret untouched.
+            new_lines.append(f"{k}={existing[k]}")
     tmp = env_path.with_suffix(env_path.suffix + ".tmp")
     tmp.write_text("\n".join(new_lines) + "\n")
     os.replace(tmp, env_path)
