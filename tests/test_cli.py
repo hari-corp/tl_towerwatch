@@ -64,6 +64,23 @@ def test_auth_refresh_help():
     assert r.exit_code == 0
 
 
+def test_auth_login_help():
+    """v1.1 (Task 4): `tl_towerwatch auth login` must exist with --help."""
+    r = runner.invoke(app, ["auth", "login", "--help"])
+    assert r.exit_code == 0
+
+
+def test_auth_login_without_creds_errors(tmp_path, monkeypatch):
+    """`auth login` must exit non-zero with a clear error when OAuth
+    client_id/secret are not configured."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / "config.yaml").touch()
+    r = runner.invoke(app, ["auth", "login"])
+    assert r.exit_code != 0
+    combined = (r.stdout or "") + (getattr(r, "stderr", None) or "")
+    assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID" in combined
+
+
 def test_init_pat_path_writes_config(tmp_path: Path, monkeypatch):
     """v1.1 init wizard (Task 3): PAT path must write config.yaml with
     auth.mode=pat and the chosen LLM provider + model."""

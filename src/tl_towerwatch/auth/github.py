@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import webbrowser
+from urllib.parse import parse_qs, urlencode, urlparse
+
 import httpx
 
 from tl_towerwatch.config import Settings
 from tl_towerwatch.github.client import GitHubClient
 
 GITHUB_OAUTH_URL = "https://github.com/login/oauth/access_token"
+GITHUB_OAUTH_AUTHORIZE = "https://github.com/login/oauth/authorize"
+OAUTH_SCOPES = "repo read:user"
 
 _REQUIRED_SCOPES = ("repo", "read:user")
 _INVALID_TOKEN_MSG = (
@@ -94,3 +99,81 @@ def _persist_env(settings: Settings) -> None:
     tmp = env_path.with_suffix(".env.tmp")
     tmp.write_text("\n".join(new_lines) + "\n")
     os.replace(tmp, env_path)
+
+
+def start_callback_server(port: int, timeout: int = 120) -> str:
+    """Tiny HTTP server that captures the ``?code=`` query param from the
+    OAuth redirect and returns it. Blocks until a single request arrives.
+
+    Used by ``complete_oauth_flow``; kept top-level and patchable so tests
+    can stub it without binding to ``127.0.0.1``.
+    """
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    code_holder = {"code": None}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 — stdlib name
+            q = parse_qs(urlparse(self.path).query)
+            code_holder["code"] = q.get("code", [None])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"OK \xe2\x80\x94 you can close this tab.")
+
+        def log_message(self, *_a, **_kw):  # silence noisy stderr
+            pass
+
+    httpd = HTTPServer(("127.0.0.1", port), _Handler)
+    httpd.timeout = timeout
+    while code_holder["code"] is None:
+        httpd.handle_request()
+    return code_holder["code"]
+
+
+def complete_oauth_flow(
+    client_id: str,
+    client_secret: str,
+    callback_url: str,
+    *,
+    port: int = 8765,
+    host_alias: str | None = None,
+    open_browser=webbrowser.open,
+) -> tuple[str, str]:
+    """Run the full OAuth dance: start callback, open browser, exchange code.
+
+    Returns ``(access_token, refresh_token)``. ``refresh_token`` may be empty
+    when GitHub does not rotate it (older OAuth Apps).
+    """
+    import secrets
+
+    code = start_callback_server(port)
+    state = secrets.token_urlsafe(16)
+    authorize_url = (
+        GITHUB_OAUTH_AUTHORIZE
+        + "?"
+        + urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": callback_url,
+                "scope": OAUTH_SCOPES,
+                "state": state,
+            }
+        )
+    )
+    open_browser(authorize_url)
+    r = httpx.post(
+        GITHUB_OAUTH_URL,
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "redirect_uri": callback_url,
+            "state": state,
+        },
+        headers={"Accept": "application/json"},
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    d = r.json()
+    return d["access_token"], d.get("refresh_token", "")

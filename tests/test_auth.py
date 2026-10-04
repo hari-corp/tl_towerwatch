@@ -4,7 +4,7 @@ import pytest
 import respx
 from httpx import Response
 
-from tl_towerwatch.auth.github import resolve_token
+from tl_towerwatch.auth.github import complete_oauth_flow, resolve_token
 from tl_towerwatch.config import load_settings
 
 
@@ -51,3 +51,45 @@ def test_resolve_token_pat_invalid_raises(tmp_path: Path):
     )
     with pytest.raises(RuntimeError, match="GitHub token is invalid"):
         resolve_token(s)
+
+
+@respx.mock
+def test_complete_oauth_flow_exchanges_code(monkeypatch):
+    """v1.1 (Task 4): the OAuth initial flow exchanges the captured code for
+    access + refresh tokens via GitHub's /login/oauth/access_token endpoint.
+
+    The callback server is stubbed (no real HTTP listener spins up during
+    pytest); the respx-mocked token endpoint returns canned tokens so we can
+    assert the wiring without touching the network.
+    """
+    captured = {}
+
+    def fake_server(port):
+        captured["port"] = port
+
+        class R:
+            auth_code = "test_code"
+            state = "x"
+
+        return R()
+
+    monkeypatch.setattr(
+        "tl_towerwatch.auth.github.start_callback_server", fake_server
+    )
+    respx.post("https://github.com/login/oauth/access_token").mock(
+        return_value=Response(
+            200,
+            json={"access_token": "new_acc", "refresh_token": "new_ref"},
+            headers={"Content-Type": "application/json"},
+        )
+    )
+    # Default open_browser is webbrowser.open — patch it so the test doesn't
+    # actually open a browser tab. The function only needs to be called once
+    # with the authorize URL.
+    monkeypatch.setattr("webbrowser.open", lambda url: True)
+    acc, ref = complete_oauth_flow(
+        "cid", "csec", "http://localhost:8765/auth/callback"
+    )
+    assert acc == "new_acc"
+    assert ref == "new_ref"
+    assert captured["port"] == 8765

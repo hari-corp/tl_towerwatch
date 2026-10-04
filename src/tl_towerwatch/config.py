@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     github_oauth_client_secret: str = ""
     github_oauth_access_token: str = ""
     github_oauth_refresh_token: str = ""
+    host_alias: str = "localhost"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"

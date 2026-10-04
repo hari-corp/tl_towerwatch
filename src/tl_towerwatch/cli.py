@@ -272,6 +272,38 @@ def auth_refresh_cmd():
     refresh_oauth_token(s)
     typer.echo("✓ OAuth token refreshed")
 
+
+@auth_app.command("login")
+def auth_login_cmd():
+    """Run the OAuth browser flow (requires client_id/secret already set)."""
+    from tl_towerwatch.auth.github import complete_oauth_flow
+    from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
+
+    s = load_settings()
+    if not (s.github_oauth_client_id and s.github_oauth_client_secret):
+        typer.echo(
+            "Set TOWERWATCH_GITHUB_OAUTH_CLIENT_ID and "
+            "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    host_alias = s.host_alias or "localhost"
+    cb = f"http://{host_alias}:8765/auth/callback"
+    acc, ref = complete_oauth_flow(s.github_oauth_client_id, s.github_oauth_client_secret, cb)
+    # Persist the new access/refresh tokens to .env so subsequent runs pick
+    # them up via load_settings() (uses _persist_env — atomic .env write).
+    s.github_oauth_access_token = acc
+    s.github_oauth_refresh_token = ref
+    from tl_towerwatch.auth.github import _persist_env
+    _persist_env(s)
+    # Flip config.yaml auth.mode to oauth so resolve_token uses the new
+    # tokens instead of the PAT (which may not be set anyway).
+    cfg_path = s.data_dir / "config.yaml"
+    data = load_config_yaml(cfg_path)
+    data.setdefault("auth", {})["mode"] = "oauth"
+    save_config_yaml(cfg_path, data)
+    typer.echo("✓ OAuth login complete. Tokens saved to .env.")
+
 @app.command()
 def serve(host: str = typer.Option("127.0.0.1"),
           port: int = typer.Option(8000)):
