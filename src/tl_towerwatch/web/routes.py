@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json as _json
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import Settings, load_settings
@@ -20,6 +22,7 @@ from tl_towerwatch.db.models import (
     ReviewComment,
     ReviewFinding,
     ReviewRun,
+    User,
 )
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.llm import get_provider
@@ -68,8 +71,106 @@ def _status_label(status: str) -> str:
     return _FINDING_STATUS_LABELS.get(status, status or "")
 
 
+def _from_json(text: str | None) -> list:
+    """Decode the JSON-encoded ``skills_json`` column for the run header
+    chip. Returns an empty list when the field is missing or malformed
+    so the template can iterate without a try/except."""
+    import json as _json_local
+    if not text:
+        return []
+    try:
+        v = _json_local.loads(text)
+    except Exception:
+        return []
+    return v if isinstance(v, list) else []
+
+
+def _skill_chips(names: list[str]) -> str:
+    """Render a run's skill list as the mock's icon-prefixed chips
+    (``⚡ superpowers + 🐴 ponytail``). Unknown skills fall back to the
+    raw name so future skills still show up in the UI."""
+    out: list[str] = []
+    for n in names:
+        if n == "superpowers":
+            out.append("⚡ superpowers")
+        elif n == "ponytail":
+            out.append("🐴 ponytail")
+        else:
+            out.append(str(n))
+    return " + ".join(out)
+
+
+def _run_duration(run) -> str:
+    """Format the run's wall-clock duration as ``Xm Ys`` for the run
+    header line. Falls back to ``""`` when either timestamp is missing
+    so the header layout stays clean for runs that never finished."""
+    from datetime import datetime, timezone
+    if not getattr(run, "finished_at", None) or not getattr(run, "started_at", None):
+        return ""
+    try:
+        s_raw = run.started_at
+        e_raw = run.finished_at
+        if s_raw.endswith("Z"):
+            s_raw = s_raw[:-1] + "+00:00"
+        if e_raw.endswith("Z"):
+            e_raw = e_raw[:-1] + "+00:00"
+        s = datetime.fromisoformat(s_raw)
+        e = datetime.fromisoformat(e_raw)
+        if s.tzinfo is None:
+            s = s.replace(tzinfo=timezone.utc)
+        if e.tzinfo is None:
+            e = e.replace(tzinfo=timezone.utc)
+    except Exception:
+        return ""
+    secs = int((e - s).total_seconds())
+    if secs < 0:
+        return ""
+    if secs >= 300:
+        return "timeout 5min ⚠️"
+    if secs < 60:
+        return f"{secs}s"
+    m, s2 = divmod(secs, 60)
+    return f"{m}m {s2:02d}s"
+
+
+def _hace(ts: str | None) -> str:
+    """Spanish ``hace X`` relative time label used in the breadcrumb / run
+    history rows. Returns ``"hace ?"`` when the timestamp is missing or
+    unparseable so the template never crashes on a bad row."""
+    from datetime import datetime, timezone
+    if not ts:
+        return "hace ?"
+    try:
+        # ISO 8601 with optional trailing ``Z``.
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        dt = datetime.fromisoformat(ts)
+    except Exception:
+        return "hace ?"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - dt
+    secs = int(delta.total_seconds())
+    if secs < 0:
+        return "hace instantes"
+    if secs < 60:
+        return "hace instantes"
+    if secs < 3600:
+        m = secs // 60
+        return f"hace {m} min"
+    if secs < 86400:
+        h = secs // 3600
+        return f"hace {h} h"
+    d = secs // 86400
+    return f"hace {d} d"
+
+
 templates.env.filters["status_color"] = _status_color
 templates.env.filters["status_label"] = _status_label
+templates.env.filters["hace"] = _hace
+templates.env.filters["from_json"] = _from_json
+templates.env.filters["skill_chips"] = _skill_chips
+templates.env.globals["run_duration"] = _run_duration
 
 router = APIRouter()
 
@@ -122,14 +223,64 @@ def index(request: Request):
     prs = list_prs_for_dashboard(db, login=login, scope_filter="mine_and_review")
     # PullRequest only carries repo_id (FK); the template needs owner/name to
     # build detail-page links and per-PR action buttons. Resolve once here.
-    with db.session() as s:
-        repos_by_id: dict[int, Repo] = {
-            r.id: r for r in s.execute(select(Repo)).scalars()
-        }
+    pr_ids: list[int] = [p.id for p in prs]
+    reviewers_by_pr: dict[int, list[dict]] = {pid: [] for pid in pr_ids}
+    summary_by_pr: dict[int, PRSummary] = {}
+    # Default values; the ``if pr_ids`` block below may overwrite both. We
+    # must bind them here so the post-loop iteration sees local variables
+    # instead of raising UnboundLocalError when no PRs are in scope.
+    review_rows: list[tuple[Review, User | None]] = []
+    repos_by_id: dict[int, Repo] = {}
+    if pr_ids:
+        with db.session() as s:
+            repos_by_id = {
+                r.id: r for r in s.execute(select(Repo)).scalars()
+            }
+            # Join Review + User in a single query so the dashboard card can
+            # render avatar bubbles + reviewer state without an n+1 round
+            # trip per PR. ``outerjoin`` preserves review rows whose
+            # reviewer hasn't been synced into the User table yet (those
+            # cards then fall back to initials).
+            review_rows = list(s.execute(
+                select(Review, User)
+                .outerjoin(User, User.login == Review.reviewer_login)
+                .where(Review.pr_id.in_(pr_ids))
+                .order_by(Review.submitted_at.asc())
+            ).all())
+            summary_rows = list(s.execute(
+                select(PRSummary).where(PRSummary.pr_id.in_(pr_ids))
+            ).scalars())
+            summary_by_pr = {row.pr_id: row for row in summary_rows}
+    # Bucket reviews by PR, attaching kind/color derived from the GitHub
+    # review state. Pending reviewers (no Review record) intentionally
+    # aren't here — the DB schema doesn't track them, so a UI bubble for
+    # a not-yet-reviewed reviewer would require a separate GitHub sync.
+    for review, user in review_rows:
+        state = (review.state or "").lower()
+        if state == "approved":
+            kind, color = "approved", "#3fb950"
+        elif state == "changes_requested":
+            kind, color = "changes_requested", "#d29922"
+        elif state in ("commented", "dismissed"):
+            kind, color = state, "#8b949e"
+        else:
+            kind, color = "commented", "#8b949e"
+        reviewers_by_pr.setdefault(review.pr_id, []).append({
+            "login": review.reviewer_login,
+            "avatar_url": getattr(user, "avatar_url", None),
+            "display_name": getattr(user, "display_name", None),
+            "state": state,
+            "kind": kind,
+            "color": color,
+        })
     for pr in prs:
         repo = repos_by_id.get(pr.repo_id)
         pr.repo_owner = repo.owner if repo else ""
         pr.repo_name = repo.name if repo else ""
+        # Attached as ad-hoc attributes for the template; SQLAlchemy ORM
+        # instances allow this without persisting anything new.
+        pr.reviewers = reviewers_by_pr.get(pr.id, [])
+        pr.summary = summary_by_pr.get(pr.id)
     # Status counters per spec §5.1. `compute_badges` uses its own names
     # (`pending_response`, `approved`, ...) that don't 1:1 match the spec
     # counter names (`needs_response`, `ready_to_merge`, ...), so translate
@@ -200,21 +351,157 @@ def repos_page(request: Request):
             r = gh._client.get("/rate_limit")
             if r.status_code == 200:
                 core = r.json().get("resources", {}).get("core", {})
-                rl = {"remaining": core.get("remaining", 0),
-                      "reset": core.get("reset", 0)}
+                remaining = int(core.get("remaining", 0) or 0)
+                reset = int(core.get("reset", 0) or 0)
+                # Width = remaining/5000 capped at 0..100% — the mock caps the
+                # bar at the 5,000 calls/hour budget of a PAT.
+                pct = max(0.0, min(100.0, remaining / 5000.0 * 100.0))
+                rl = {
+                    "remaining": remaining,
+                    "reset": reset,
+                    "width_pct": f"{pct:.0f}%",
+                    "reset_human": _humanize_reset(reset),
+                }
     except Exception:
         rl = None
     repo_rows = svc_list_repos(db)
+    # Single grouped query: open PR count per repo (spec §5.3). Avoids an N+1
+    # over `repo_rows` when the user has many repos registered.
+    open_counts: dict[int, int] = {}
+    if repo_rows:
+        with db.session() as s:
+            open_counts = dict(s.execute(
+                select(PullRequest.repo_id, func.count(PullRequest.id))
+                .where(PullRequest.state == "open")
+                .group_by(PullRequest.repo_id)
+            ).all())
+    repo_count = len(repo_rows)
+    active_count = sum(1 for r in repo_rows if r.enabled)
+    error_count = sum(1 for r in repo_rows if (r.last_fetch_status or "") == "error")
+    global_interval_minutes = (settings.refresh_interval_seconds or 0) // 60
+    llm_default_model = _llm_default_model(settings)
     for r in repo_rows:
         try:
             authors = _json.loads(r.allowed_authors_json or "[]")
         except Exception:
             authors = []
         r.allowed_authors_csv = ", ".join(authors)
+        r.open_pr_count = int(open_counts.get(r.id, 0))
+        r.scope_label = _SCOPE_LABELS.get(r.scope or "mine_and_review",
+                                          r.scope or "mine_and_review")
+        r.interval_minutes = (r.refresh_interval_seconds or 0) // 60
+        r.last_fetch_human = _humanize_ago(r.last_fetched_at)
+        # Per-repo override wins over the global default; mirrors the LLM
+        # resolution order in `services.pull_requests.sync_repo`.
+        r.llm_display = r.llm_override or llm_default_model
     return templates.TemplateResponse(request, "repos.html",
         {"nav": "repos", "theme": _theme(request),
          "repos": repo_rows, "rl": rl,
+         "repo_count": repo_count,
+         "active_count": active_count,
+         "paused_count": repo_count - active_count,
+         "error_count": error_count,
+         "global_interval_minutes": global_interval_minutes,
          **_user_context(db, "dimh")})
+
+
+# Repo scope -> human-readable label, per spec §5.3. New scopes need a label
+# here (and a matching entry in `services.pull_requests.list_prs_for_dashboard`)
+# to surface in the repos UI.
+_SCOPE_LABELS = {
+    "all": "todos los abiertos",
+    "mine": "mis PRs",
+    "mine_and_review": "mis PRs + review-requested",
+    "review": "solo review-requested",
+}
+
+
+def _humanize_ago(iso_ts: str | None) -> str:
+    """Render an ISO-8601 timestamp as a "hace X" relative string.
+
+    Used by the repos page to show how long ago each repo was last fetched
+    (and, for paused repos, how long since they were paused). Returns ``"—"``
+    when the timestamp is missing or unparseable so the badge stays compact.
+    """
+    if not iso_ts:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if secs < 0:
+        return "—"
+    if secs < 60:
+        return f"{secs} seg"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins} min"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours} h"
+    days = hours // 24
+    return f"{days} d"
+
+
+def _humanize_reset(reset_unix: int) -> str:
+    """Render a unix timestamp as a "en X" relative string for the rate-limit
+    banner's reset hint. Matches the granularity ladder in ``_humanize_ago``
+    (seg / min / h / d) and clamps past timestamps to "ahora" so a stale
+    banner doesn't read "resetea en -3 min"."""
+    if not reset_unix:
+        return "—"
+    delta = reset_unix - int(time.time())
+    if delta <= 0:
+        return "ahora"
+    mins = delta // 60
+    if mins < 60:
+        return f"{mins} min"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours} h"
+    days = hours // 24
+    return f"{days} d"
+
+
+def _llm_default_model(settings: Settings) -> str:
+    """Resolve the configured LLM model name for the repos page. Mirrors the
+    provider dispatch in ``tl_towerwatch.llm.get_provider`` so the UI label
+    tracks the same default the sync path uses."""
+    p = settings.llm.default_provider
+    if p == "anthropic":
+        return settings.llm.anthropic.model
+    if p == "openai":
+        return settings.llm.openai.model
+    if p == "ollama":
+        return settings.llm.ollama.model
+    # Fallback to anthropic when an unknown provider slipped through.
+    return settings.llm.anthropic.model
+
+
+@router.post("/repos/{owner}/{name}/refresh")
+def repos_refresh(owner: str, name: str):
+    """Sync a single repo's open PRs from GitHub into the local cache.
+
+    Per-repo counterpart to ``POST /refresh-all`` — used by the repos page's
+    per-row "▶ Refrescar ahora" button. Bounces to /settings on auth failure
+    so a stale PAT surfaces to the user instead of returning a 500.
+    """
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
+    with db.session() as s:
+        repo = s.execute(select(Repo).where(
+            Repo.owner == owner, Repo.name == name
+        )).scalar_one()
+    llm = get_provider(settings) if settings.llm.anthropic.api_key else None
+    with GitHubClient(token=token) as gh:
+        sync_repo(db, gh, repo, llm=llm)
+    return RedirectResponse("/repos", status_code=303)
 
 @router.post("/repos/add")
 def repos_add(owner_name: str = Form(...), authors: str = Form("")):
@@ -324,11 +611,43 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
     pr = None
     summary = None
     runs: list[ReviewRun] = []
+    last_run: ReviewRun | None = None
     human_reviews: list[Review] = []
     human_comments: list[ReviewComment] = []
     resolved_count = 0
     pending_count = 0
     new_count = 0
+    commits_count = 0
+    human_reviews_count = 0
+    human_comments_count = 0
+    runs_count = 0
+    pending_review_run = 0  # how many agent runs ended in a non-done state
+    # Skills come from config.yaml via load_config_yaml, same plumbing the
+    # settings page uses (the skill registry also reads the same file).
+    # We deliberately fall back to the default registry (superpowers +
+    # ponytail) when the file is absent or malformed so the widget still
+    # renders for first-run users without a saved config.yaml.
+    from tl_towerwatch.skills.registry import default_registry
+    cfg_path = settings.data_dir / "config.yaml"
+    cfg_data = load_config_yaml(cfg_path)
+    enabled_skills: list[dict] = []
+    raw_skills = cfg_data.get("skills", {})
+    if isinstance(raw_skills, dict) and raw_skills:
+        for skill_name, skill_val in raw_skills.items():
+            if isinstance(skill_val, dict) and skill_val.get("enabled", True):
+                enabled_skills.append({
+                    "name": skill_name,
+                    "cli_flag": skill_val.get("cli_flag", f"--skill {skill_name}"),
+                    "description": skill_val.get("description", ""),
+                })
+    if not enabled_skills:
+        for sk in default_registry():
+            if sk.enabled:
+                enabled_skills.append({
+                    "name": sk.name,
+                    "cli_flag": sk.cli_flag,
+                    "description": sk.description,
+                })
     with db.session() as s:
         repo = s.execute(select(Repo).where(
             Repo.owner == owner, Repo.name == name
@@ -348,6 +667,8 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
                     select(ReviewComment).where(ReviewComment.pr_id == pr.id)
                     .order_by(ReviewComment.created_at.asc())
                 ).scalars())
+                human_reviews_count = len(human_reviews)
+                human_comments_count = len(human_comments)
                 # tl_towerwatch review runs (newest first). We attach the
                 # findings to each run so the template can render them in
                 # the loop without re-querying.
@@ -355,6 +676,11 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
                     select(ReviewRun).where(ReviewRun.pr_id == pr.id)
                     .order_by(ReviewRun.id.desc())
                 ).scalars())
+                runs_count = len(runs)
+                if runs:
+                    last_run = runs[0]
+                    if last_run.status != "done":
+                        pending_review_run = 1
                 findings_by_run: dict[int, list[ReviewFinding]] = {}
                 if runs:
                     rows = list(s.execute(
@@ -374,13 +700,23 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
                     # Attach as a plain attribute; SQLAlchemy ORM instances
                     # allow ad-hoc attributes for template consumption.
                     run.findings = findings_by_run.get(run.id, [])
+                # commits_count is populated by sync_one_pr from the
+                # /pulls/:number endpoint. Default to 0 when missing so the
+                # tab label still renders.
+                commits_count = getattr(pr, "commits_count", 0) or 0
     return templates.TemplateResponse(request, "pr_detail.html",
         {"nav": "home", "theme": _theme(request),
-         "pr": pr, "summary": summary, "runs": runs,
+         "pr": pr, "summary": summary, "runs": runs, "last_run": last_run,
          "human_reviews": human_reviews, "human_comments": human_comments,
          "resolved_count": resolved_count,
          "pending_count": pending_count,
          "new_count": new_count,
+         "commits_count": commits_count,
+         "human_reviews_count": human_reviews_count,
+         "human_comments_count": human_comments_count,
+         "runs_count": runs_count,
+         "pending_review_run": pending_review_run,
+         "enabled_skills": enabled_skills,
          "owner": owner, "name": name,
          **_user_context(db, "dimh")})
 
@@ -420,12 +756,66 @@ def pr_run_review(owner: str, name: str, number: int,
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
+    """Settings tab — Auth + LLM configuration page (Task 19 mock layout).
+
+    Reads ``config.yaml`` so the skills-registry preview, auth mode, and
+    provider labels all reflect the user's actual configuration. Empty /
+    missing config falls back to safe defaults so the page never 500s on a
+    fresh install.
+    """
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
+    cfg = load_config_yaml(settings.data_dir / "config.yaml")
+    # Skills registry preview — normalize the raw dict from config.yaml into
+    # a list of dicts the template can iterate over without ad-hoc getattr
+    # calls. We only render enabled skills in the preview per the mock.
+    skills_section = cfg.get("skills") or {}
+    enabled_skills = []
+    if isinstance(skills_section, dict):
+        for name, val in skills_section.items():
+            if not isinstance(val, dict):
+                continue
+            enabled_skills.append({
+                "name": name,
+                "description": val.get("description", "") or "",
+                "cli_flag": val.get("cli_flag", f"--skill {name}"),
+                "enabled": bool(val.get("enabled", True)),
+            })
+    # Auth mode: OAuth wins if its access token is set, else PAT (which is
+    # also the default for a fresh install with no tokens configured).
+    if settings.github_oauth_access_token:
+        auth_mode = "oauth"
+    else:
+        auth_mode = "pat"
+    # Token masking for the Auth + LLM chips. We always show the prefix even
+    # if the real token is empty so the chip layout is stable across the
+    # "no token yet" / "configured" states.
+    token_last4 = (settings.github_token[-4:]
+                   if settings.github_token else "<none>")
+    anthropic_key_last4 = (settings.llm.anthropic.api_key[-4:]
+                           if settings.llm.anthropic.api_key else "<none>")
+    # Provider labels for the `<select>` and the right-side status badges.
+    # MiniMax is shown as a fourth option in the mock but isn't yet a valid
+    # value in the ``LLMCfg.default_provider`` Literal, so it can never be
+    # marked ``selected`` — it's a visual placeholder.
+    PROVIDER_LABELS = {
+        "anthropic": "Anthropic (Claude)",
+        "openai":    "OpenAI (Codex / GPT)",
+        "mavis":     "MiniMax Code (Mavis)",
+        "ollama":    "Ollama (local)",
+    }
+    default_provider_label = PROVIDER_LABELS.get(
+        settings.llm.default_provider, settings.llm.default_provider,
+    )
     return templates.TemplateResponse(request, "settings.html",
         {"nav": "settings", "theme": _theme(request),
          "settings": settings,
+         "enabled_skills": enabled_skills,
+         "auth_mode": auth_mode,
+         "token_last4": token_last4,
+         "anthropic_key_last4": anthropic_key_last4,
+         "default_provider_label": default_provider_label,
          **_user_context(db, "dimh")})
 
 @router.post("/settings/auth/save")

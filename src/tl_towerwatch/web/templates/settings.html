@@ -1,36 +1,295 @@
 {% extends "base.html" %}
+{% block title %}Settings — Auth & LLMs{% endblock %}
 {% block content %}
-<h1>Settings</h1>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-  <div class="card">
-    <h3>GitHub Auth</h3>
-    <form method="post" action="/settings/auth/save">
-      <label>PAT</label>
-      <input name="github_token" value="{{ settings.github_token }}" style="width:100%">
-      <label>OAuth client_id</label>
-      <input name="github_oauth_client_id" value="{{ settings.github_oauth_client_id }}" style="width:100%">
-      <label>OAuth client_secret</label>
-      <input name="github_oauth_client_secret" type="password" value="{{ settings.github_oauth_client_secret }}" style="width:100%">
-      <button class="primary" type="submit">Guardar</button>
+
+<h2 style="margin:0 0 4px 0;">Settings — Auth &amp; LLMs</h2>
+<p class="subtitle" style="margin:0 0 16px 0;">
+  Configuración global: cómo te autenticás con GitHub y qué LLM/agent usás para los reviews
+</p>
+
+{# ---------------------------------------------------------------------------
+   Settings tab strip — visual only, the four tabs map to future per-tab
+   routes. Only "Auth & LLMs" is wired today; the other three render as
+   inactive (muted, no underline) labels per the mock.
+   --------------------------------------------------------------------------- #}
+<div data-testid="settings-tabs"
+     style="display:flex;gap:0;font-size:13px;border-bottom:1px solid var(--border);margin-bottom:16px;">
+  <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">🔐 Auth &amp; LLMs</span>
+  <span style="padding:8px 14px;color:var(--muted);">Apariencia</span>
+  <span style="padding:8px 14px;color:var(--muted);">Refresh global</span>
+  <span style="padding:8px 14px;color:var(--muted);">Skills registry</span>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+
+  {# ========================================================================
+     LEFT — GitHub Auth card
+     ======================================================================== #}
+  <div class="card" data-testid="github-auth-card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+      <span style="font-size:18px;">🔐</span>
+      <strong style="color:var(--fg);font-size:15px;">GitHub Auth</strong>
+      <span class="badge badge-success"
+            style="margin-left:auto;"
+            data-testid="connected-badge">● Conectado</span>
+    </div>
+
+    {# Current user card ---------------------------------------------------- #}
+    <div data-testid="user-card"
+         style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;display:flex;align-items:center;gap:12px;">
+      <div style="width:40px;height:40px;border-radius:50%;background:var(--card);border:1px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--fg);font-weight:600;flex-shrink:0;">
+        {% if user_avatar_url %}
+          <img src="{{ user_avatar_url }}" alt="" style="width:100%;height:100%;object-fit:cover;">
+        {% else %}
+          <span data-testid="avatar-initials">??</span>
+        {% endif %}
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div style="color:var(--fg);font-size:14px;font-weight:600;">@{{ user_login or 'anonymous' }}</div>
+        <div style="color:var(--muted);font-size:12px;">
+          {{ user_display_name | default('') }}{% if user_display_name %} · {% endif %}scopes: <code>repo, read:user</code>
+        </div>
+      </div>
+      {# Placeholder — the page doesn't actually disconnect; the visual
+         matches the mock. #}
+      <button type="button" data-testid="disconnect-btn"
+              style="background:var(--card);color:var(--danger);border:1px solid var(--danger);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+        Desconectar
+      </button>
+    </div>
+
+    {# Auth form wraps the PAT block + OAuth block so a future edit could
+       post through the existing /settings/auth/save route. The placeholder
+       buttons below are type="button" so they don't submit prematurely. #}
+    <form method="post" action="/settings/auth/save" data-testid="auth-form">
+      {# PAT input + OAuth credentials are kept as hidden inputs so the
+         persistence route stays in sync with the current chip state. An
+         empty value here is a no-op (see _persist_auth_keys). #}
+      <input type="hidden" name="github_token" value="{{ settings.github_token or '' }}">
+      <input type="hidden" name="github_oauth_client_id" value="{{ settings.github_oauth_client_id or '' }}">
+      <input type="hidden" name="github_oauth_client_secret" value="{{ settings.github_oauth_client_secret or '' }}">
+
+      {# Mode selector ---------------------------------------------------- #}
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
+        Modo de autenticación
+      </label>
+      <div style="display:flex;gap:6px;margin-bottom:14px;">
+        <label data-testid="auth-mode-pat"
+               style="flex:1;padding:10px 12px;{% if auth_mode == 'pat' %}background:var(--bg-secondary);border:2px solid var(--success);{% else %}background:var(--bg-secondary);border:1px solid var(--border);{% endif %}border-radius:6px;cursor:pointer;">
+          <input type="radio" name="auth-mode" value="pat"
+                 {% if auth_mode == 'pat' %}checked{% endif %}
+                 style="margin-right:6px;">
+          <strong style="color:{% if auth_mode == 'pat' %}var(--success){% else %}var(--fg){% endif %};font-size:13px;">Personal Access Token</strong>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4;">
+            Pegás un PAT de GitHub. Simple, portable, sin registrar nada.
+          </div>
+        </label>
+        <label data-testid="auth-mode-oauth"
+               style="flex:1;padding:10px 12px;{% if auth_mode == 'oauth' %}background:var(--bg-secondary);border:2px solid var(--success);{% else %}background:var(--bg-secondary);border:1px solid var(--border);{% endif %}border-radius:6px;cursor:pointer;">
+          <input type="radio" name="auth-mode" value="oauth"
+                 {% if auth_mode == 'oauth' %}checked{% endif %}
+                 style="margin-right:6px;">
+          <strong style="color:{% if auth_mode == 'oauth' %}var(--success){% else %}var(--fg){% endif %};font-size:13px;">GitHub App + OAuth</strong>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4;">
+            Login OAuth desde el navegador. Necesita App registrada.
+          </div>
+        </label>
+      </div>
+
+      {# PAT config block — only visible when PAT mode is selected. #}
+      {% if auth_mode == 'pat' %}
+      <div data-testid="pat-config"
+           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <strong style="color:var(--fg);font-size:13px;">Token</strong>
+          <span style="color:var(--success);font-size:11px;">
+            {% if settings.github_token %}✓ válido · creado hace 14d{% else %}✗ no configurado{% endif %}
+          </span>
+        </div>
+        <div data-testid="pat-token-chip"
+             style="background:var(--card);border:1px solid var(--border);border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:var(--accent);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+          <span>ghp_••••••••••••••••••••••••••••••••••••••••{{ token_last4 }}</span>
+          <button type="button"
+                  style="background:transparent;color:var(--accent);border:0;font-size:11px;cursor:pointer;">
+            👁 mostrar
+          </button>
+        </div>
+        <div style="display:flex;gap:6px;">
+          {# Visual placeholders — the settings page doesn't actually probe
+             GitHub; that lives on the per-PR /repos flows. #}
+          <button type="button"
+                  style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+            🔄 Probar conexión
+          </button>
+          <button type="button"
+                  style="background:var(--card);color:var(--fg);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+            ✏ Reemplazar token
+          </button>
+        </div>
+        <div style="color:var(--muted);font-size:11px;margin-top:10px;line-height:1.5;">
+          Almacenado en <code>.env</code> (<code>TOWERWATCH_GITHUB_TOKEN</code>).<br>
+          Scopes requeridos: <code>repo</code>, <code>read:user</code>.
+        </div>
+      </div>
+      {% endif %}
+
+      {# OAuth hint — always visible per task spec (mock shows it even when
+         PAT is selected). Dashed border signals "secondary / informational". #}
+      <div data-testid="oauth-hint"
+           style="background:var(--bg-secondary);border:1px dashed var(--border);border-radius:6px;padding:10px 12px;color:var(--muted);font-size:12px;line-height:1.5;">
+        <strong style="color:var(--fg);">Si elegís OAuth</strong> necesitás registrar tu propia GitHub App
+        (<a href="#" style="color:var(--accent);">ver guía paso a paso</a>) y pegar abajo
+        client_id + client_secret. Callback: <code>http://localhost:8765/auth/callback</code>.
+      </div>
     </form>
   </div>
-  <div class="card">
-    <h3>LLM</h3>
-    <form method="post" action="/settings/llm/save">
-      <label>Default provider</label>
-      <select name="provider">
-        {% for p in ["anthropic","openai","ollama"] %}
-          <option {% if p == settings.llm.default_provider %}selected{% endif %}>{{ p }}</option>
-        {% endfor %}
+
+  {# ========================================================================
+     RIGHT — LLM / Agent settings card
+     ======================================================================== #}
+  <div class="card" data-testid="llm-card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+      <span style="font-size:18px;">🤖</span>
+      <strong style="color:var(--fg);font-size:15px;">LLM / Agent para reviews</strong>
+    </div>
+
+    {# LLM form wraps the provider selector + active provider config so the
+         existing /settings/llm/save persistence route stays wired. #}
+    <form method="post" action="/settings/llm/save" data-testid="llm-form">
+      {# Flat mirror inputs keep the persistence helper's contract — see
+         _persist_llm_keys for the empty-value-is-noop semantics. #}
+      <input type="hidden" name="anthropic_api_key" value="{{ settings.llm.anthropic.api_key or '' }}">
+      <input type="hidden" name="openai_api_key"     value="{{ settings.llm.openai.api_key or '' }}">
+      <input type="hidden" name="ollama_base_url"    value="{{ settings.llm.ollama.base_url or '' }}">
+
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
+        Provider por defecto
+      </label>
+      <select data-testid="provider-select" name="provider"
+              style="width:100%;background:var(--card);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-size:13px;margin-bottom:14px;">
+        <option value="anthropic" {% if settings.llm.default_provider == 'anthropic' %}selected{% endif %}>Anthropic (Claude)</option>
+        <option value="openai"    {% if settings.llm.default_provider == 'openai'    %}selected{% endif %}>OpenAI (Codex / GPT)</option>
+        <option value="mavis"     {% if settings.llm.default_provider == 'mavis'     %}selected{% endif %}>MiniMax Code (Mavis)</option>
+        <option value="ollama"    {% if settings.llm.default_provider == 'ollama'    %}selected{% endif %}>Ollama (local)</option>
       </select>
-      <label>Anthropic API key</label>
-      <input name="anthropic_api_key" value="{{ settings.llm.anthropic.api_key }}" style="width:100%">
-      <label>OpenAI API key</label>
-      <input name="openai_api_key" value="{{ settings.llm.openai.api_key }}" style="width:100%">
-      <label>Ollama base URL</label>
-      <input name="ollama_base_url" value="{{ settings.llm.ollama.base_url }}" style="width:100%">
-      <button class="primary" type="submit">Guardar</button>
+
+      {# Active provider config — only the row matching default_provider
+         is expanded. The other three render as collapsed <details>. #}
+      {% if settings.llm.default_provider == 'anthropic' %}
+      <div data-testid="anthropic-config"
+           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <strong style="color:var(--fg);font-size:13px;">Anthropic</strong>
+          <span class="badge badge-success" style="font-size:10px;">✓ configurado</span>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">API key</label>
+          <div data-testid="anthropic-key-chip"
+               style="background:var(--card);border:1px solid var(--border);border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:var(--accent);display:flex;align-items:center;justify-content:space-between;">
+            <span>sk-ant-•••••••••••••••••••••••••••••••{{ anthropic_key_last4 }}</span>
+            <button type="button"
+                    style="background:transparent;color:var(--accent);border:0;font-size:11px;cursor:pointer;">👁</button>
+          </div>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;">
+            en <code>.env</code> como <code>TOWERWATCH_ANTHROPIC_API_KEY</code>
+          </div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Modelo default</label>
+          <select name="anthropic_model"
+                  style="width:100%;background:var(--card);color:var(--fg);border:1px solid var(--border);padding:6px 10px;border-radius:4px;font-size:12px;">
+            <option {% if settings.llm.anthropic.model == 'claude-3-5-sonnet-latest' %}selected{% endif %}>claude-3-5-sonnet-latest (recomendado)</option>
+            <option {% if settings.llm.anthropic.model == 'claude-3-5-haiku-latest'  %}selected{% endif %}>claude-3-5-haiku-latest (rápido/barato)</option>
+            <option {% if settings.llm.anthropic.model == 'claude-3-opus-latest'     %}selected{% endif %}>claude-3-opus-latest (máxima calidad)</option>
+          </select>
+        </div>
+        <button type="button"
+                style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+          🔄 Probar conexión
+        </button>
+      </div>
+      {% else %}
+      {# When Anthropic isn't the default, still show the Anthropic card so
+         the user can see/edit it — but in a collapsed <details> summary
+         matching the "Other providers" section below. #}
+      {% endif %}
+
+      {# Other-provider summaries — always rendered so the user can see the
+         full provider list. The active provider's row above already
+         shows its full config; the others collapse to one-line status. #}
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">
+        <details {% if settings.llm.default_provider == 'openai' %}open{% endif %}>
+          <summary style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--muted);list-style:none;">
+            <span style="color:var(--fg);">▸ OpenAI (Codex / GPT)</span>
+            <span style="margin-left:8px;font-size:10px;color:var(--muted);">no configurado</span>
+          </summary>
+        </details>
+        <details {% if settings.llm.default_provider == 'mavis' %}open{% endif %}>
+          <summary style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--muted);list-style:none;">
+            <span style="color:var(--fg);">▸ MiniMax Code (Mavis)</span>
+            <span style="margin-left:8px;font-size:10px;color:var(--success);">configurado</span>
+          </summary>
+        </details>
+        <details {% if settings.llm.default_provider == 'ollama' %}open{% endif %}>
+          <summary style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--muted);list-style:none;">
+            <span style="color:var(--fg);">▸ Ollama (local)</span>
+            <span style="margin-left:8px;font-size:10px;color:var(--muted);">auto-detectado en localhost:11434</span>
+          </summary>
+        </details>
+      </div>
     </form>
+
+    {# Skills registry preview (blue-tinted, lives outside the LLM form so
+       it doesn't accidentally submit on save). #}
+    <div data-testid="skills-registry-preview"
+         style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:6px;padding:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <strong style="color:var(--fg);font-size:13px;">🎯 Skills registry</strong>
+        <span data-testid="skills-count" style="color:var(--muted);font-size:11px;">
+          {{ enabled_skills | length }} configuradas
+        </span>
+      </div>
+      {% if enabled_skills %}
+      <div style="font-size:12px;color:var(--fg);display:flex;flex-direction:column;gap:6px;">
+        {% for skill in enabled_skills %}
+        <div style="display:flex;justify-content:space-between;padding:6px 10px;background:var(--card);border-radius:4px;">
+          <span>
+            <strong style="color:var(--success);" data-testid="skill-name">{{ skill.name }}</strong>
+            {% if skill.description %} · <span style="color:var(--muted);">{{ skill.description }}</span>{% endif %}
+          </span>
+          <span style="color:var(--muted);font-size:11px;">enabled</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="font-size:12px;color:var(--muted);">0 configuradas.</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+        Editá <code>config.yaml</code> y agregá una sección <code>skills:</code> con
+        <code>name</code>/<code>enabled</code>/<code>description</code>/<code>cli_flag</code>.
+      </div>
+      {% endif %}
+      <div style="margin-top:10px;font-size:11px;color:var(--muted);">
+        Configuración detallada de skills (descripciones, flags, modelos por skill) en la pestaña
+        <strong style="color:var(--accent);">Skills registry</strong>.
+      </div>
+    </div>
   </div>
 </div>
+
+{# ---------------------------------------------------------------------------
+   Bottom save bar — autosave indicator + a placeholder restore-defaults
+   button (no handler wired; visual parity with the mock only).
+   --------------------------------------------------------------------------- #}
+<div data-testid="save-bar"
+     style="margin-top:16px;padding:12px 20px;border-top:1px solid var(--border);background:var(--bg-secondary);border-radius:6px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);">
+  <span>Cambios se guardan automáticamente al .env / config.yaml</span>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <span style="color:var(--success);" data-testid="saved-indicator">✓ todo guardado</span>
+    <button type="button" data-testid="restore-defaults-btn"
+            style="background:var(--card);color:var(--fg);border:1px solid var(--border);padding:5px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+      ↻ Restaurar defaults
+    </button>
+  </div>
+</div>
+
 {% endblock %}

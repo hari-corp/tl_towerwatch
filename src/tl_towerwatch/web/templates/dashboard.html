@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+
 <div style="display:flex;align-items:baseline;gap:12px;justify-content:space-between;">
   <h1 style="margin:0">PRs</h1>
   <form method="post" action="/refresh-all" style="margin:0">
@@ -9,57 +10,156 @@
     </button>
   </form>
 </div>
-<p style="color:var(--muted)">{{ prs|length }} PRs visibles · login: {{ login }}</p>
+<p style="color:var(--muted);margin:0 0 14px 0">{{ prs|length }} PRs visibles · login: {{ login }}</p>
+
+<!-- Status counters strip (spec §5.1). The route translates raw badge names
+     (awaiting_my_review / pending_response / ...) into the 4 spec counter
+     keys via BADGE_TO_COUNTER; we just render them in a fixed English
+     order with a hard-coded color matching the badge palette in the mock.
+     The label text is left lowercase here; CSS ``text-transform: uppercase``
+     handles display while the underlying HTML keeps the original casing
+     for downstream tooling (and the case-sensitive regression tests). -->
+{% set COUNTERS = [
+  ('awaiting_my_review', '#f78166'),
+  ('needs_response',     '#d29922'),
+  ('changes_requested',  '#d29922'),
+  ('ready_to_merge',     '#3fb950'),
+] %}
 <div style="display:flex;gap:10px;padding:16px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border);font-size:12px;">
-  {% for k, v in counts.items() %}
-  <div style="flex:1;padding:10px 12px;background:var(--card);border-radius:6px;border-left:3px solid var(--accent);">
-    <div style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;">{{ k.replace('_',' ') }}</div>
-    <div style="font-size:22px;font-weight:700;color:var(--accent);margin-top:2px;">{{ v }}</div>
+  {% for key, color in COUNTERS %}
+  <div style="flex:1;padding:10px 12px;background:var(--card);border-radius:6px;border-left:3px solid {{ color }};">
+    <div style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;">{{ key.replace('_', ' ') }}</div>
+    <div style="font-size:22px;font-weight:700;color:{{ color }};margin-top:2px;">{{ counts.get(key, 0) }}</div>
   </div>
   {% endfor %}
 </div>
-{% for pr in prs %}
-<div class="card" style="margin-bottom:10px">
-  <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
-    <a href="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}"
-       style="color:inherit;text-decoration:none;flex:1">
-      <strong>{{ pr.title }}</strong>
-    </a>
-    <span style="color:var(--muted);font-size:11px;font-family:monospace">
-      {{ pr.repo_owner }}/{{ pr.repo_name }}#{{ pr.number }}
-    </span>
+
+<!-- Filter bar — visual placeholders only. Server-side filtering still
+     runs through scope_filter="mine_and_review" (see routes.index); the
+     dropdowns / search box render so the layout matches the v2 mock but
+     don't yet wire to the request. They'll be wired in a follow-up task. -->
+<div style="display:flex;flex-direction:column;gap:8px;padding:10px 20px;border-bottom:1px solid var(--border);">
+  <div style="display:flex;align-items:center;justify-content:space-between;">
+    <div style="display:flex;gap:4px;font-size:13px;">
+      <span style="background:var(--code-bg);color:var(--fg);padding:5px 12px;border-radius:5px;font-weight:600;">📌 Attention ({{ prs|length }})</span>
+      <span style="color:var(--muted);padding:5px 12px;">My PRs</span>
+      <span style="color:var(--muted);padding:5px 12px;">Review-requested</span>
+      <span style="color:var(--muted);padding:5px 12px;">All open</span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
+      <span>order:</span>
+      <span style="color:var(--accent);">updated ↓</span>
+    </div>
   </div>
-  <div style="color:var(--muted);font-size:12px;margin-top:4px">
-    {{ pr.author_login }} · updated {{ pr.updated_at }} · head {{ pr.head_sha[:7] }}
-  </div>
-  <div style="margin-top:6px">
-    {% for b in badges_by_pr.get(pr.id, []) %}
-      <span style="background:{{ b.color }}22;color:{{ b.color }};padding:2px 8px;border-radius:10px;font-size:11px">{{ b.name }}</span>
-    {% endfor %}
-  </div>
-  <div style="margin-top:8px;display:flex;gap:8px;font-size:12px">
-    <form method="post"
-          action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/refresh"
-          style="margin:0">
-      <button type="submit"
-              style="padding:3px 9px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);cursor:pointer;font-size:12px">
-        Refresh
-      </button>
-    </form>
-    <form method="post"
-          action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/run-review"
-          style="margin:0">
-      <input type="hidden" name="agent" value="claude">
-      <input type="hidden" name="skills" value="">
-      <input type="hidden" name="mode" value="fresh">
-      <button type="submit"
-              style="padding:3px 9px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:white;cursor:pointer;font-size:12px">
-        ▶ Run review
-      </button>
-    </form>
+  <div style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);">
+    <span>Filter by:</span>
+    <select style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:12px;">
+      <option>Repo: all</option>
+    </select>
+    <select style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:5px;font-size:12px;">
+      <option>Author: any</option>
+    </select>
+    <input placeholder="🔎 search title..." style="background:var(--code-bg);color:var(--fg);border:1px solid var(--border);padding:4px 10px;border-radius:5px;font-size:12px;flex:1;max-width:240px;">
   </div>
 </div>
-{% else %}
-<p>0 PRs. Usa <code>tl_towerwatch repo add owner/name</code> para empezar.</p>
-{% endfor %}
+
+<!-- PR cards list -->
+<div style="padding:12px 20px;display:flex;flex-direction:column;gap:10px;">
+  {% for pr in prs %}
+    {% set pr_badges = badges_by_pr.get(pr.id, []) %}
+    {# Card border picks the highest-priority badge so the colored strip
+       communicates the PR's most important state at a glance. #}
+    {% set border_color = '#8b949e' %}
+    {% for b in pr_badges %}
+      {% if b.name in ('approved', 'pending_response', 'changes_requested', 'awaiting_my_review') %}
+        {% set border_color = b.color %}
+      {% endif %}
+    {% endfor %}
+  <div style="background:var(--card);border:1px solid var(--border);border-left:3px solid {{ border_color }};border-radius:6px;padding:14px 16px;">
+    <div style="display:flex;align-items:start;gap:12px;">
+      <div style="flex:1;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:var(--muted);flex-wrap:wrap;">
+          <span style="background:var(--code-bg);padding:2px 8px;border-radius:10px;">{{ pr.repo_owner }}/{{ pr.repo_name }}</span>
+          <span>#{{ pr.number }}</span>
+          <span>·</span>
+          <span><strong style="color:var(--fg);">created</strong> {{ pr.created_at|hace }} by {{ pr.author_login }}</span>
+          <span>·</span>
+          <span style="color:#f1c40f;">{{ pr.commits_count }} commits post-creation</span>
+          <span>·</span>
+          <span>updated {{ pr.updated_at|hace }}</span>
+        </div>
+        <a href="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}"
+           style="font-size:15px;font-weight:600;color:var(--fg);text-decoration:none;display:block;margin-bottom:8px;">
+          {{ pr.title }}
+        </a>
+        {% if pr.summary and pr.summary.summary %}
+        <div style="font-size:13px;color:var(--fg);line-height:1.5;margin-bottom:10px;">
+          <span style="background:var(--success);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px;">RESUMEN</span>
+          {{ pr.summary.summary }}
+        </div>
+        {% endif %}
+
+        <!-- Reviewers row: one avatar bubble per Review row joined with User.
+             Pending reviewers (no review row yet) intentionally aren't
+             rendered — the DB doesn't store them. -->
+        {% if pr.reviewers %}
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:12px;">
+          <span style="color:var(--muted);">Reviewers:</span>
+          {% for r in pr.reviewers %}
+          <div style="display:flex;align-items:center;gap:4px;">
+            {% if r.avatar_url %}
+              <img src="{{ r.avatar_url }}" alt="{{ r.login }}" title="{{ r.login }} · {{ r.kind }}"
+                   style="width:22px;height:22px;border-radius:50%;border:2px solid {{ r.color }};object-fit:cover;">
+            {% else %}
+              <div style="width:22px;height:22px;border-radius:50%;background:var(--code-bg);display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--fg);border:2px solid {{ r.color }};" title="{{ r.login }} · {{ r.kind }}">{{ r.login[:2]|upper }}</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <div style="display:flex;gap:6px;align-items:center;font-size:11px;flex-wrap:wrap;">
+          {% for b in pr_badges %}
+            <span style="background:{{ b.color }}22;color:{{ b.color }};padding:2px 8px;border-radius:10px;font-weight:600;">{{ b.name }}</span>
+          {% endfor %}
+          <span style="background:var(--code-bg);color:var(--muted);padding:2px 8px;border-radius:10px;">+{{ pr.additions }} / -{{ pr.deletions }} lines</span>
+          <span style="background:var(--code-bg);color:var(--muted);padding:2px 8px;border-radius:10px;">{{ pr.changed_files }} archivos</span>
+          <span style="color:var(--muted);">CI ✓</span>
+        </div>
+        <details style="margin-top:8px;">
+          <summary style="background:transparent;color:var(--accent);cursor:pointer;font-size:12px;list-style:none;">📄 Ver descripción del PR ▾</summary>
+          <pre style="margin-top:8px;color:var(--muted);font-size:12px;white-space:pre-wrap;font-family:system-ui,-apple-system,sans-serif;">{{ pr.body or '' }}</pre>
+        </details>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;">
+        <form method="post"
+              action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/run-review"
+              style="margin:0">
+          <input type="hidden" name="agent" value="claude">
+          <input type="hidden" name="skills" value="">
+          <input type="hidden" name="mode" value="fresh">
+          <button type="submit"
+                  style="width:100%;background:var(--success);color:#fff;border:0;padding:6px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+            ▶ Review →
+          </button>
+        </form>
+        <a href="{{ pr.html_url }}" target="_blank" rel="noopener noreferrer"
+           style="background:var(--code-bg);color:var(--muted);border:1px solid var(--border);padding:4px 10px;border-radius:5px;font-size:11px;text-decoration:none;text-align:center;">
+          Ver en GitHub ↗
+        </a>
+        <form method="post"
+              action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/refresh"
+              style="margin:0">
+          <button type="submit"
+                  style="width:100%;padding:4px 10px;border:1px solid var(--border);border-radius:4px;background:var(--code-bg);color:var(--text);cursor:pointer;font-size:11px">
+            Refresh
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <p>0 PRs. Usa <code>tl_towerwatch repo add owner/name</code> para empezar.</p>
+  {% endfor %}
+</div>
 {% endblock %}

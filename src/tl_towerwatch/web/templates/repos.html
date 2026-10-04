@@ -1,28 +1,114 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Repos</h1>
+
+<h2 style="margin:0 0 4px;">Gestión de Repos</h2>
+<p class="subtitle" style="margin:0 0 14px;color:var(--muted);font-size:13px;">
+  Alta/baja de repos, estado de cada uno, último fetch, rate limit, acciones por repo
+</p>
+
 {% if rl %}
-<div style="padding:10px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;font-size:12px;">
-  <span style="background:#1f6f3b;color:#7ee787;padding:3px 10px;border-radius:10px;font-weight:600;">● API OK</span>
-  <span>Rate limit: <strong>{{ rl.remaining }}</strong> remaining</span>
-  <span style="color:var(--muted);">· resets {{ rl.reset }}</span>
+<div style="background:var(--card);border:1px solid var(--border);border-left:3px solid var(--success);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:14px;gap:12px;flex-wrap:wrap;">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span class="badge badge-success">● API OK</span>
+    <span style="color:var(--muted);">Rate limit GitHub:</span>
+    <div style="background:var(--bg-secondary);width:140px;height:8px;border-radius:4px;overflow:hidden;border:1px solid var(--border);">
+      <div style="background:linear-gradient(90deg,var(--success),#f1c40f,var(--danger));height:100%;width:{{ rl.width_pct }};border-radius:4px;"></div>
+    </div>
+    <span style="color:var(--success);font-weight:600;">{{ "{:,}".format(rl.remaining) }} / 5,000 restantes</span>
+    <span style="color:var(--muted);">· resetea en {{ rl.reset_human }}</span>
+  </div>
+  <div style="color:var(--muted);font-size:11px;">
+    usuario: <strong style="color:var(--fg);">@{{ user_login }}</strong> (PAT)
+  </div>
 </div>
 {% endif %}
-<form method="post" action="/repos/add" class="card" style="margin-bottom:14px;display:flex;gap:8px">
-  <input name="owner_name" placeholder="owner/name" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px;border-radius:5px;font-family:monospace">
-  <input name="authors" placeholder="autores (opcional, comma-separated)" style="flex:2;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px;border-radius:5px">
-  <button class="primary" type="submit">+ Agregar</button>
-</form>
-{% for r in repos %}
-<div class="card" style="margin-bottom:10px">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <strong>{{ r.owner }}/{{ r.name }}</strong>
-    <span style="color:var(--muted);font-size:11px">{{ "ACTIVO" if r.enabled else "PAUSADO" }} · last fetch: {{ r.last_fetched_at or "—" }}</span>
-  </div>
-  <form method="post" action="/repos/{{ r.owner }}/{{ r.name }}/set-authors" style="margin-top:8px;display:flex;gap:6px">
-    <input name="authors" value="{{ r.allowed_authors_csv }}" placeholder="autores allowlist" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:5px 8px;border-radius:5px">
-    <button type="submit">Guardar autores</button>
+
+<div class="card" style="margin-bottom:14px;">
+  <form method="post" action="/repos/add" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+    <div style="flex:2;min-width:240px;">
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">Agregar repo (owner/name)</label>
+      <input name="owner_name" placeholder="hari-corp/nuevo-servicio" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-size:13px;font-family:monospace;">
+    </div>
+    <div style="flex:1;min-width:200px;">
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">Autores allowlist (opcional)</label>
+      <input name="authors" placeholder="alice, bob" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-size:13px;">
+    </div>
+    <button type="submit" class="primary">+ Agregar</button>
   </form>
+  <div style="margin-top:8px;font-size:11px;color:var(--muted);">
+    Pegá un <code>owner/name</code> o una URL completa tipo <code>https://github.com/owner/name</code> · valida acceso antes de guardar.
+  </div>
 </div>
-{% endfor %}
+
+<div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:14px;gap:10px;flex-wrap:wrap;">
+  <div style="display:flex;gap:4px;flex-wrap:wrap;">
+    <span style="background:var(--bg-secondary);color:var(--fg);padding:5px 12px;border-radius:5px;font-weight:600;">Todos ({{ repo_count }})</span>
+    <span style="padding:5px 12px;">Activos ({{ active_count }})</span>
+    <span style="padding:5px 12px;">Pausados ({{ paused_count }})</span>
+    <span style="padding:5px 12px;">Con error ({{ error_count }})</span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <span>orden:</span>
+    <a href="#" style="color:var(--accent);text-decoration:none;">nombre ↑</a>
+    <button type="button">↻ Refrescar todos</button>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px;">
+  {% for r in repos %}
+  <div class="repo-card" style="background:var(--card);border:1px solid {% if r.is_self %}var(--accent){% else %}var(--border){% endif %};border-left:3px solid {% if not r.enabled %}#6e7681{% elif r.is_self %}var(--accent){% else %}var(--success){% endif %};border-radius:6px;padding:14px 16px;{% if not r.enabled %}opacity:0.7;{% endif %}">
+    <div style="display:flex;align-items:start;gap:12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <span style="font-size:15px;font-weight:600;color:var(--fg);font-family:monospace;">{{ r.owner }}/{{ r.name }}</span>
+          {% if r.enabled %}
+          <span class="badge badge-success">● ACTIVO</span>
+          {% else %}
+          <span class="badge badge-muted">⏸ PAUSADO</span>
+          {% endif %}
+          {% if r.is_self %}
+          <span class="badge badge-warning">⭐ SELF</span>
+          {% endif %}
+          <span style="background:var(--bg-secondary);color:var(--muted);padding:2px 8px;border-radius:10px;font-size:11px;">{{ r.open_pr_count }} PRs abiertos</span>
+          <span style="color:var(--muted);font-size:11px;margin-left:auto;">
+            {% if r.enabled %}último fetch: hace {{ r.last_fetch_human }}{% else %}pausado hace {{ r.last_fetch_human }}{% endif %}
+          </span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;">
+          <span>📅 refresh cada <strong style="color:var(--fg);">{{ r.interval_minutes }} min</strong>{% if r.is_self %} <span style="color:#f1c40f;">(más agresivo: dogfooding)</span>{% endif %}</span>
+          <span>🎯 scope: <strong style="color:var(--fg);">{{ r.scope_label }}</strong></span>
+          <span>🤖 LLM: <strong style="color:var(--fg);">{{ r.llm_display }}</strong></span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;min-width:160px;">
+        <form method="post" action="/repos/{{ r.owner }}/{{ r.name }}/refresh">
+          <button type="submit" class="primary" style="width:100%;">▶ Refrescar ahora</button>
+        </form>
+        <div style="display:flex;gap:4px;">
+          <button type="button" style="flex:1;">⚙ config</button>
+          <form method="post" action="/repos/{{ r.owner }}/{{ r.name }}/toggle" style="flex:1;display:flex;">
+            <button type="submit" style="flex:1;width:100%;">{% if r.enabled %}⏸ pausar{% else %}▶ activar{% endif %}</button>
+          </form>
+        </div>
+        <form method="post" action="/repos/{{ r.owner }}/{{ r.name }}/remove">
+          <button type="submit" style="background:transparent;color:var(--danger);border:0;padding:3px 8px;text-align:left;font-size:11px;cursor:pointer;">🗑 quitar</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="card" style="text-align:center;color:var(--muted);">
+    No hay repos registrados todavía. Pegá un <code>owner/name</code> arriba para empezar.
+  </div>
+  {% endfor %}
+</div>
+
+<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);gap:10px;flex-wrap:wrap;">
+  <span>{{ repo_count }} repos · {{ active_count }} activos · refresco global cada {{ global_interval_minutes }} min</span>
+  <div style="display:flex;gap:8px;">
+    <button type="button">⏸ Pausar todos</button>
+    <button type="button" class="primary">▶ Refrescar todos ahora</button>
+  </div>
+</div>
+
 {% endblock %}

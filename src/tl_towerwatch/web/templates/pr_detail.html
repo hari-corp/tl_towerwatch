@@ -1,157 +1,284 @@
 {% extends "base.html" %}
 {% block content %}
-<a href="/">← dashboard</a>
-<h1>{{ pr.title if pr else "PR no encontrado" }}</h1>
-{% if pr %}
-  <p style="color:var(--muted)">{{ pr.author_login }} · #{{ pr.number }} · {{ pr.head_sha[:7] }}</p>
-  {% if summary %}
-    <div class="card" style="margin:12px 0;border-left:3px solid var(--accent)">
-      <strong>RESUMEN</strong>
-      <p>{{ summary.summary }}</p>
-    </div>
-  {% endif %}
-  <form method="post" action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/run-review" class="card">
-    <label>Agent:</label>
-    <select name="agent">
-      <option>claude</option><option>codex</option><option>minimax</option><option>ollama</option>
-    </select>
-    <label>Skills:</label>
-    <input name="skills" placeholder="superpowers,ponytail">
-    <label>Mode:</label>
-    <select name="mode"><option>fresh</option><option>compare</option></select>
-    <button class="primary" type="submit">▶ Run review</button>
-  </form>
+{# v3 mock — left column + sticky right "Run review" widget. The base.html
+   already ships the global header (brand + nav + theme switcher), so this
+   template only renders the breadcrumb + the two-column grid below it. #}
+{% if not pr %}
+  <h1>PR no encontrado</h1>
+  <p style="color:var(--muted)">No existe el PR <code>{{ owner }}/{{ name }}#{{ number }}</code> en la base local.</p>
+{% else %}
 
-  {# ----- Tabs (spec §5.2) -----
-     Six tabs in this order: Overview, Commits, Files, Reviews, Comments,
-     tl_towerwatch reviews. The tabs are rendered as a sticky nav row with
-     anchor links; each tab panel is anchored below. The default visible
-     panel is Overview; the tl_towerwatch reviews panel is the deepest and
-     gets the full findings breakdown. #}
-  <nav style="display:flex;gap:8px;margin:18px 0 12px 0;border-bottom:1px solid var(--border);">
-    <a href="#tab-overview" style="padding:8px 12px;color:var(--accent);text-decoration:none;border-bottom:2px solid var(--accent);">Overview</a>
-    <a href="#tab-commits"  style="padding:8px 12px;color:var(--muted);text-decoration:none;">Commits</a>
-    <a href="#tab-files"    style="padding:8px 12px;color:var(--muted);text-decoration:none;">Files</a>
-    <a href="#tab-reviews"  style="padding:8px 12px;color:var(--muted);text-decoration:none;">Reviews</a>
-    <a href="#tab-comments" style="padding:8px 12px;color:var(--muted);text-decoration:none;">Comments</a>
-    <a href="#tab-agent"    style="padding:8px 12px;color:var(--muted);text-decoration:none;">tl_towerwatch reviews</a>
-  </nav>
+{# ----------------- Breadcrumb + per-PR refresh button ----------------- #}
+<div style="padding:10px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;">
+  <div>
+    <a href="/" style="color:var(--muted);text-decoration:none;">← volver al dashboard</a>
+    &nbsp;&nbsp;|&nbsp;&nbsp;
+    <span style="background:var(--card);padding:2px 8px;border-radius:10px;border:1px solid var(--border);">{{ owner }}/{{ name }}</span>
+    <strong style="color:var(--fg);">#{{ pr.number }}</strong>
+    &nbsp;&nbsp;|&nbsp;&nbsp;
+    <a href="{{ pr.html_url }}" target="_blank" rel="noopener" style="color:var(--muted);text-decoration:none;">abrir en GitHub ↗</a>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <span style="color:var(--muted);">actualizado {{ pr.updated_at | hace }}</span>
+    <form method="post"
+          action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/refresh"
+          style="margin:0">
+      <button type="submit"
+              style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 12px;border-radius:5px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+        ↻ Refrescar este PR
+      </button>
+    </form>
+  </div>
+</div>
 
-  <section id="tab-overview">
-    <h3>Overview</h3>
-    {% if summary %}
-      <div class="card" style="margin:8px 0;">
-        <strong>LLM summary</strong>
-        <p>{{ summary.summary }}</p>
+{# ----------------- Two-column grid (1fr | 380px) ----------------- #}
+<div style="display:grid;grid-template-columns:1fr 380px;gap:0;">
+
+  {# ===== LEFT ===== #}
+  <div style="padding:20px;border-right:1px solid var(--border);">
+
+    {# PR header block #}
+    <div style="margin-bottom:16px;display:flex;align-items:start;justify-content:space-between;gap:12px;">
+      <div style="flex:1;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:var(--muted);flex-wrap:wrap;">
+          {% set state_label = 'OPEN' if pr.state == 'open' else ('MERGED' if pr.state == 'merged' else 'CLOSED') %}
+          {% if pr.draft %}
+            {% set state_label = 'DRAFT' %}
+          {% endif %}
+          {% if state_label == 'OPEN' %}
+            <span style="background:#1f242c;color:#f78166;padding:2px 8px;border-radius:10px;font-weight:600;">OPEN</span>
+          {% elif state_label == 'DRAFT' %}
+            <span style="background:#1f242c;color:#8b949e;padding:2px 8px;border-radius:10px;font-weight:600;">DRAFT</span>
+          {% elif state_label == 'MERGED' %}
+            <span style="background:#1f242c;color:#a371f7;padding:2px 8px;border-radius:10px;font-weight:600;">MERGED</span>
+          {% else %}
+            <span style="background:#1f242c;color:#f85149;padding:2px 8px;border-radius:10px;font-weight:600;">CLOSED</span>
+          {% endif %}
+          <span style="background:#1f242c;color:var(--muted);padding:2px 8px;border-radius:10px;">base: {{ pr.base_ref }}</span>
+          <span>· creado {{ pr.created_at | hace }} por <strong style="color:#c9d1d9;">{{ pr.author_login }}</strong></span>
+          <span>· <strong style="color:var(--warning);">{{ commits_count }} commits post-creación</strong></span>
+          <span>· actualizado {{ pr.updated_at | hace }}</span>
+        </div>
+        <h1 style="margin:0;font-size:22px;font-weight:700;color:var(--fg);line-height:1.3;">
+          {{ pr.title }}
+        </h1>
       </div>
+    </div>
+
+    {# Tabs (visual only — Overview is the active panel, the rest are
+       placeholder labels per spec §5.2 + the v3 mock). They are NOT links
+       because we only render the Overview content in this iteration. #}
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;font-size:13px;">
+      <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">Overview</span>
+      <span style="padding:8px 14px;color:var(--muted);">Commits ({{ commits_count }})</span>
+      <span style="padding:8px 14px;color:var(--muted);">Files ({{ pr.changed_files }})</span>
+      <span style="padding:8px 14px;color:var(--muted);">Reviews ({{ human_reviews_count }})</span>
+      <span style="padding:8px 14px;color:var(--muted);">Comments ({{ human_comments_count }})</span>
+      <span style="padding:8px 14px;color:var(--accent);">🤖 tl_towerwatch reviews ({{ runs_count }}){% if pending_review_run %} · <span style="background:var(--warning);color:#161b22;padding:0 5px;border-radius:3px;font-size:11px;font-weight:700;">{{ pending_review_run }} pendiente</span>{% endif %}</span>
+    </div>
+
+    {# Resumen automático — only shown when a PRSummary row exists for this PR.
+       The whole card is hidden otherwise so the test can assert presence
+       vs absence deterministically. #}
+    {% if summary %}
+    <div style="background:#0c2818;border:1px solid #1f6f3b;border-left:3px solid var(--success);border-radius:6px;padding:12px 14px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="background:#1f6f3b;color:#7ee787;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;">RESUMEN AUTOMÁTICO</span>
+        <span style="color:var(--muted);font-size:11px;">{{ summary.model }} · head: {{ summary.head_sha[:7] }} · cache hit</span>
+        <button type="button"
+                style="background:transparent;color:var(--accent);border:0;padding:0;margin-left:auto;font-size:11px;cursor:pointer;">↻ regenerar</button>
+      </div>
+      <div style="font-size:13px;color:#c9d1d9;line-height:1.6;white-space:pre-wrap;">{{ summary.summary }}</div>
+    </div>
     {% endif %}
-    <div class="card" style="margin:8px 0;">
-      <strong>Description</strong>
-      <p style="white-space:pre-wrap;">{{ pr.body or "(sin descripción)" }}</p>
-    </div>
-    <div class="card" style="margin:8px 0;">
-      <strong>Files modified</strong>
-      <p style="color:var(--muted)">detalle por archivo disponible en la pestaña <a href="#tab-files">Files</a> (v1.2).</p>
-    </div>
-    <div class="card" style="margin:8px 0;">
-      <strong>Human reviews</strong>
-      <p style="color:var(--muted)">{{ human_reviews|length }} review(s) humano(s) — ver <a href="#tab-reviews">Reviews</a>.</p>
-    </div>
-  </section>
 
-  <section id="tab-commits" style="margin-top:18px;">
-    <h3>Commits</h3>
-    <div class="card" style="margin:8px 0;">
-      <p>Detalle por commit disponible en v1.2.</p>
-      <p style="color:var(--muted)">HEAD actual: <code>{{ pr.head_sha }}</code></p>
-    </div>
-  </section>
-
-  <section id="tab-files" style="margin-top:18px;">
-    <h3>Files</h3>
-    <div class="card" style="margin:8px 0;">
-      <p>Detalle por archivo (path, <code style="color:#3fb950">+adds</code> / <code style="color:#f78166">-dels</code>) disponible en v1.2.</p>
-    </div>
-  </section>
-
-  <section id="tab-reviews" style="margin-top:18px;">
-    <h3>Reviews</h3>
-    {% if human_reviews %}
-      {% for r in human_reviews %}
-        <div class="card" style="margin:6px 0;">
-          <strong>{{ r.reviewer_login }}</strong>
-          · <span style="color:var(--accent)">{{ r.state }}</span>
-          · <span style="color:var(--muted)">{{ r.submitted_at }}</span>
-          {% if r.body %}<p>{{ r.body }}</p>{% endif %}
-        </div>
-      {% endfor %}
-    {% else %}
-      <p style="color:var(--muted)">Sin reviews humanos todavía.</p>
-    {% endif %}
-  </section>
-
-  <section id="tab-comments" style="margin-top:18px;">
-    <h3>Comments</h3>
-    {% if human_comments %}
-      {% for c in human_comments %}
-        <div class="card" style="margin:6px 0;">
-          <strong>{{ c.reviewer_login }}</strong>
-          {% if c.path %} · <code style="color:var(--muted)">{{ c.path }}</code>{% endif %}
-          · <span style="color:var(--muted)">{{ c.created_at }}</span>
-          <p>{{ c.body }}</p>
-        </div>
-      {% endfor %}
-    {% else %}
-      <p style="color:var(--muted)">Sin comentarios humanos todavía.</p>
-    {% endif %}
-  </section>
-
-  <section id="tab-agent" style="margin-top:18px;">
-    <h3>🤖 Historial de reviews del agente</h3>
-    {# Spec §5.2 aggregated counters strip. #}
-    <div style="display:flex;gap:6px;margin-bottom:14px;font-size:11px;">
-      <span style="background:#1f6f3b;color:#7ee787;padding:3px 8px;border-radius:4px;">✓ {{ resolved_count }} resueltos</span>
-      <span style="background:#9e6a03;color:#fff;padding:3px 8px;border-radius:4px;">⚠ {{ pending_count }} pendientes</span>
-      <span style="background:#1f242c;color:#8b949e;padding:3px 8px;border-radius:4px;">🆕 {{ new_count }} nuevos</span>
+    {# PR description #}
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;margin-bottom:16px;">
+      <strong style="color:#c9d1d9;font-size:13px;">Descripción del PR</strong>
+      <div style="font-size:13px;color:#c9d1d9;line-height:1.6;margin-top:8px;white-space:pre-wrap;">{{ pr.body or '(sin descripción)' }}</div>
     </div>
 
-    {% if runs %}
-      {% for run in runs %}
-        {# Newest run stays expanded (spec §5.2 — "default tab content if
-           requested from a deep link"). Older runs are collapsed but
-           accessible; the brief uses `open` for the newest to mirror
-           the GitHub reviews panel. #}
-        <details {% if loop.first %}open{% endif %} style="margin:6px 0;background:var(--card);padding:8px 10px;border-radius:6px;border:1px solid var(--border);">
-          <summary>
-            <strong>Run #{{ run.id }}</strong> · {{ run.status }} · {{ run.agent_runner }} · {{ run.started_at }}
-            {% if run.error %}<span style="color:#f78166"> · {{ run.error }}</span>{% endif %}
-          </summary>
-          {% if run.findings %}
-            {% for f in run.findings %}
-              <div style="background:var(--card);padding:8px 10px;border-radius:4px;border-left:3px solid {{ f.status | status_color }};margin:4px 0;">
-                <span style="background:#3fb950;color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;">{{ f.severity }}</span>
-                <code style="color:#79c0ff;font-size:11px;">{{ f.file_path }}:{{ f.line }}</code>
-                <span style="float:right;color:{{ f.status | status_color }};">{{ f.status | status_label }}</span>
-                <div>{{ f.description }}</div>
-                {% if f.resolved_in_commit %}
-                  <div style="color:var(--muted);font-size:10px;margin-top:4px;">resuelto en <code>{{ f.resolved_in_commit[:7] }}</code></div>
+    {# 🤖 Agent review history #}
+    <div style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:6px;padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <strong style="color:var(--fg);font-size:14px;">🤖 Historial de reviews del agente</strong>
+        <span style="color:var(--muted);font-size:11px;">{{ runs_count }} runs · head actual: {{ pr.head_sha[:7] }}</span>
+      </div>
+
+      {# Status chip strip — counters aggregated across all runs. #}
+      <div style="display:flex;gap:6px;margin-bottom:14px;font-size:11px;">
+        <span style="background:#1f6f3b;color:#7ee787;padding:3px 8px;border-radius:4px;">✓ {{ resolved_count }} resueltos</span>
+        <span style="background:#9e6a03;color:#fff;padding:3px 8px;border-radius:4px;">⚠ {{ pending_count }} pendientes</span>
+        <span style="background:#1f242c;color:var(--muted);padding:3px 8px;border-radius:4px;">🆕 {{ new_count }} nuevos</span>
+        {% if last_run %}
+          <span style="color:var(--muted);margin-left:auto;">última corrida: {{ last_run.started_at | hace }}</span>
+        {% endif %}
+      </div>
+
+      {% if runs %}
+          {% for run in runs %}
+            {% set expanded = loop.first %}
+            {% set skill_names = run.skills_json | from_json %}
+            {% set duration_label = run_duration(run) %}
+            <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;margin-bottom:10px;overflow:hidden;">
+              <div style="padding:{% if expanded %}10{% else %}8{% endif %}px 12px;background:#1f242c;{% if expanded %}border-bottom:1px solid var(--border);{% endif %}display:flex;justify-content:space-between;align-items:center;font-size:12px;">
+                <span>
+                  <strong style="color:#c9d1d9;">Run #{{ run.id }}</strong>
+                  <span style="color:var(--muted);">· {{ run.started_at | hace }} · {{ run.agent_runner }}{% if skill_names %} · {{ skill_names | skill_chips }}{% endif %}{% if duration_label %} · {{ duration_label }}{% endif %}{% if run.status == 'timeout' or run.status == 'failed' %} · timeout 5min ⚠️{% endif %}</span>
+                </span>
+                {% if expanded %}
+                  <span style="background:#1f6f3b;color:#7ee787;padding:1px 6px;border-radius:3px;font-size:10px;">comparado contra run #{{ loop.index0 + 1 if loop.index0 + 1 <= runs|length else runs|length }}</span>
+                {% else %}
+                  <span style="color:var(--muted);">▾ expand</span>
                 {% endif %}
               </div>
-            {% endfor %}
-          {% else %}
-            <p style="color:var(--muted);margin:6px 0 0 0;">Sin findings.</p>
-          {% endif %}
-          {% if run.result_markdown %}
-            <details style="margin-top:6px;">
-              <summary style="color:var(--muted);font-size:11px;">output completo</summary>
-              <pre style="white-space:pre-wrap;font-size:11px;">{{ run.result_markdown }}</pre>
-            </details>
-          {% endif %}
-        </details>
-      {% endfor %}
-    {% else %}
-      <p style="color:var(--muted)">Aún no hay runs para este PR.</p>
-    {% endif %}
-  </section>
+              {% if expanded %}
+              <div style="padding:10px 12px;font-size:12px;display:flex;flex-direction:column;gap:8px;">
+                {% if run.findings %}
+                  {% for f in run.findings %}
+                    {% if f.status == 'resolved' %}
+                      <div style="background:#0d2818;padding:8px 10px;border-radius:4px;border-left:3px solid var(--success);">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                          <span><span style="background:var(--success);color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;">{{ f.severity | upper }}</span> <code style="color:#79c0ff;font-size:11px;">{{ f.file_path }}{% if f.line %}:{{ f.line }}{% endif %}</code></span>
+                          <span style="color:var(--success);">✓ RESUELTO</span>
+                        </div>
+                        <div style="color:#c9d1d9;">{{ f.description }}</div>
+                        {% if f.resolved_in_commit %}
+                          <div style="color:var(--muted);font-size:11px;margin-top:4px;">commit <code>{{ f.resolved_in_commit[:7] }}</code> agregó <code>fix</code></div>
+                        {% endif %}
+                      </div>
+                    {% elif f.status == 'pending' %}
+                      <div style="background:#2b1d04;padding:8px 10px;border-radius:4px;border-left:3px solid var(--warning);">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                          <span><span style="background:var(--warning);color:#161b22;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;">{{ f.severity | upper }}</span> <code style="color:#79c0ff;font-size:11px;">{{ f.file_path }}{% if f.line %}:{{ f.line }}{% endif %}</code></span>
+                          <span style="color:var(--warning);">⚠ PENDIENTE</span>
+                        </div>
+                        <div style="color:#c9d1d9;">{{ f.description }}</div>
+                      </div>
+                    {% else %}
+                      <div style="background:#0a1f3a;padding:8px 10px;border-radius:4px;border-left:3px solid var(--accent);">
+                        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                          <span><span style="background:var(--success);color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;">{{ f.severity | upper }}</span> <code style="color:#79c0ff;font-size:11px;">{{ f.file_path }}{% if f.line %}:{{ f.line }}{% endif %}</code></span>
+                          <span style="color:var(--accent);">🆕 NUEVO</span>
+                        </div>
+                        <div style="color:#c9d1d9;">{{ f.description }}</div>
+                      </div>
+                    {% endif %}
+                  {% endfor %}
+                {% else %}
+                  <p style="color:var(--muted);margin:0;">Sin findings.</p>
+                {% endif %}
+              </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+      {% else %}
+        <p style="color:var(--muted);margin:0;">Aún no hay runs para este PR.</p>
+      {% endif %}
+    </div>
+
+    {# Reviews de humanos #}
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;">
+      <strong style="color:#c9d1d9;font-size:13px;">Reviews de humanos</strong>
+      {% if human_reviews %}
+        <div style="margin-top:10px;font-size:13px;color:#c9d1d9;display:flex;flex-direction:column;gap:10px;">
+          {% for r in human_reviews %}
+            <div style="display:flex;gap:10px;">
+              <div style="width:28px;height:28px;border-radius:50%;background:#1f6f3b;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0;">{{ (r.reviewer_login[:2] | upper) }}</div>
+              <div style="flex:1;">
+                <strong>{{ r.reviewer_login }}</strong>
+                <span style="color:var(--muted);">· {{ r.state }} · {{ r.submitted_at | hace }}</span>
+                {% if r.body %}
+                  <div style="background:#1f242c;padding:8px;border-radius:4px;margin-top:4px;white-space:pre-wrap;">{{ r.body }}</div>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p style="color:var(--muted);margin-top:10px;">Sin reviews humanos todavía.</p>
+      {% endif %}
+    </div>
+
+  </div>
+
+  {# ===== RIGHT: Run review widget (sticky) ===== #}
+  <div style="padding:20px;background:var(--bg-secondary);">
+    <form method="post"
+          action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/run-review"
+          style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;position:sticky;top:20px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+        <span style="font-size:16px;">🤖</span>
+        <strong style="color:var(--fg);font-size:14px;">Run review</strong>
+      </div>
+
+      {# Two-mode toggle: Fresh / Compare vs run #N (only shown when a run
+         exists). The radios are styled to look like buttons; their selected
+         value is what the form submits as `mode`. #}
+      <div style="display:flex;gap:0;border-radius:5px;overflow:hidden;margin-bottom:12px;border:1px solid var(--border);">
+        <label style="flex:1;background:var(--card);color:var(--muted);padding:6px;font-size:12px;cursor:pointer;text-align:center;display:block;">
+          <input type="radio" name="mode" value="fresh" style="display:none" checked>
+          Fresh review
+        </label>
+        {% if last_run %}
+        <label style="flex:1;background:#0d2818;color:#7ee787;padding:6px;font-size:12px;cursor:pointer;text-align:center;display:block;font-weight:600;">
+          <input type="radio" name="mode" value="compare" style="display:none">
+          ↻ Comparar vs run #{{ last_run.id }}
+        </label>
+        {% endif %}
+      </div>
+
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">Agente runner</label>
+      <select name="agent"
+              style="width:100%;background:var(--card);color:var(--fg);border:1px solid var(--border);padding:6px 10px;border-radius:5px;font-size:13px;margin-bottom:12px;">
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+        <option value="minimax">MiniMax Code</option>
+        <option value="ollama">Ollama local</option>
+      </select>
+
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Skills a invocar</label>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+        {% for sk in enabled_skills %}
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#0d2818;border:1px solid var(--success);border-radius:5px;cursor:pointer;font-size:13px;">
+            <input type="checkbox" name="skills" value="{{ sk.name }}" checked>
+            {% if sk.name == 'superpowers' %}
+              <span style="color:#7ee787;font-weight:600;">⚡ {{ sk.name }}</span>
+            {% elif sk.name == 'ponytail' %}
+              <span style="color:#7ee787;font-weight:600;">🐴 {{ sk.name }}</span>
+            {% else %}
+              <span style="color:#7ee787;font-weight:600;">{{ sk.name }}</span>
+            {% endif %}
+          </label>
+        {% endfor %}
+      </div>
+
+      <div style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:5px;padding:10px;margin-bottom:12px;font-size:12px;">
+        <strong style="color:var(--accent);">📋 Contexto a pasar al agente:</strong>
+        <ul style="margin:6px 0 0;padding-left:18px;color:#c9d1d9;line-height:1.6;">
+          <li>Diff actual (head <code>{{ pr.head_sha[:7] }}</code>)</li>
+          <li>{{ resolved_count + pending_count + new_count }} findings con su estado</li>
+          <li>{{ human_comments_count }} comentarios humanos pendientes</li>
+        </ul>
+      </div>
+
+      <details style="margin-bottom:12px;">
+        <summary style="font-size:11px;color:var(--accent);cursor:pointer;">⚙ prompt template (avanzado)</summary>
+        <textarea style="width:100%;min-height:80px;background:var(--bg-secondary);color:#c9d1d9;border:1px solid var(--border);padding:8px;border-radius:5px;font-size:12px;font-family:monospace;margin-top:6px;box-sizing:border-box;">Previous findings: {findings_with_status}</textarea>
+      </details>
+
+      <button type="submit"
+              style="width:100%;background:var(--success);color:#fff;border:0;padding:10px;border-radius:5px;font-size:14px;font-weight:600;cursor:pointer;">
+        ▶ Run review &amp; compare
+      </button>
+
+      <div style="margin-top:10px;font-size:11px;color:var(--muted);text-align:center;">
+        timeout 5 min · output estructurado (severity, file, status)
+      </div>
+    </form>
+  </div>
+
+</div>
+
 {% endif %}
 {% endblock %}
