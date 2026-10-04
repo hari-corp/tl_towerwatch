@@ -47,7 +47,7 @@
 
 <h2 style="margin:0 0 4px 0;">Settings — Auth &amp; Skills</h2>
 <p class="subtitle" style="margin:0 0 16px 0;">
-  Configuración global: cómo te autenticás con GitHub y qué skills usar para los reviews
+  Configuración global: cómo te autenticás con GitHub y qué prompts disparar para los reviews
 </p>
 
 {# ---------------------------------------------------------------------------
@@ -64,6 +64,9 @@
 
   {# ========================================================================
      LEFT — GitHub Auth card
+     v1.3.0: includes a detailed comparison between PAT and OAuth so the
+     user knows which to pick, what scopes to grant, and how to obtain
+     each credential.
      ======================================================================== #}
   <div class="card" data-testid="github-auth-card">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
@@ -97,29 +100,165 @@
       </form>
     </div>
 
+    {# ----------------------------------------------------------------
+       Auth mode picker with a side-by-side comparison table.
+       The table is the user's "cheat sheet" — scopes + advantages +
+       best-for — so they can decide without leaving the page.
+       ---------------------------------------------------------------- #}
     <form method="post" action="/settings/auth/save" data-testid="auth-form">
       <input type="hidden" name="github_token" value="{{ settings.github_token or '' }}">
       <input type="hidden" name="github_oauth_client_id" value="{{ settings.github_oauth_client_id or '' }}">
       <input type="hidden" name="github_oauth_client_secret" value="{{ settings.github_oauth_client_secret or '' }}">
 
-      {% if auth_mode == 'pat' %}
-      <div style="margin-bottom:14px;">
-        <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
-          Personal Access Token
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
+        Modo de autenticación
+      </label>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+        <label data-testid="auth-mode-pat"
+               style="padding:12px;{% if auth_mode == 'pat' %}background:var(--bg-secondary);border:2px solid var(--success);{% else %}background:var(--bg-secondary);border:1px solid var(--border);{% endif %}border-radius:6px;cursor:pointer;">
+          <input type="radio" name="auth_mode" value="pat"
+                 {% if auth_mode == 'pat' %}checked{% endif %}
+                 style="margin-right:6px;">
+          <strong style="color:{% if auth_mode == 'pat' %}var(--success){% else %}var(--fg){% endif %};font-size:13px;">Personal Access Token</strong>
+          <div style="color:var(--muted);font-size:11px;margin-top:6px;line-height:1.5;">
+            Pegás un PAT que generás en GitHub. <strong>Más simple</strong>, sin registrar
+            nada. Funciona offline.
+          </div>
         </label>
-        <input name="github_token_edit" type="password"
-               placeholder="ghp_…{% if token_last4 %}(actual termina en ...{{ token_last4 }}){% endif %}"
-               autocomplete="off"
-               style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
-        <div style="color:var(--muted);font-size:11px;margin-top:4px;">
-          Dejá en blanco para no cambiar. Se guarda en <code>.env</code> como
-          <code>TOWERWATCH_GITHUB_TOKEN</code>.
+        <label data-testid="auth-mode-oauth"
+               style="padding:12px;{% if auth_mode == 'oauth' %}background:var(--bg-secondary);border:2px solid var(--success);{% else %}background:var(--bg-secondary);border:1px solid var(--border);{% endif %}border-radius:6px;cursor:pointer;">
+          <input type="radio" name="auth_mode" value="oauth"
+                 {% if auth_mode == 'oauth' %}checked{% endif %}
+                 style="margin-right:6px;">
+          <strong style="color:{% if auth_mode == 'oauth' %}var(--success){% else %}var(--fg){% endif %};font-size:13px;">GitHub App + OAuth</strong>
+          <div style="color:var(--muted);font-size:11px;margin-top:6px;line-height:1.5;">
+            Login OAuth desde el navegador. <strong>Más seguro</strong>, tokens rotan
+            automáticamente, pero requiere registrar tu propia GitHub App.
+          </div>
+        </label>
+      </div>
+
+      {# ----------------------------------------------------------------
+         Comparison table — what the user gives GitHub, what GitHub gives
+         back, what tl_towerwatch can do with it. This stays visible
+         regardless of which mode is selected so the user always has the
+         reference.
+         ---------------------------------------------------------------- #}
+      <table data-testid="auth-compare-table"
+             style="width:100%;border-collapse:collapse;margin-bottom:14px;font-size:12px;">
+        <thead>
+          <tr style="text-align:left;color:var(--muted);">
+            <th style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">&nbsp;</th>
+            <th style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Personal Access Token</th>
+            <th style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">GitHub App + OAuth</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding:6px 8px;color:var(--muted);">Cómo se obtiene</td>
+            <td style="padding:6px 8px;">GitHub → <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener" style="color:var(--accent);">Settings → Developer settings → Personal access tokens → Fine-grained tokens</a> → Generate new token</td>
+            <td style="padding:6px 8px;">GitHub → <a href="https://github.com/settings/apps" target="_blank" rel="noopener" style="color:var(--accent);">Settings → Developer settings → GitHub Apps → New GitHub App</a> → registrá tu app → flow OAuth</td>
+          </tr>
+          <tr style="background:var(--bg-secondary);">
+            <td style="padding:6px 8px;color:var(--muted);">Qué guardás</td>
+            <td style="padding:6px 8px;"><code>TOWERWATCH_GITHUB_TOKEN</code> (un string largo <code>ghp_…</code>)</td>
+            <td style="padding:6px 8px;"><code>TOWERWATCH_GITHUB_OAUTH_CLIENT_ID</code> + <code>TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET</code></td>
+          </tr>
+          <tr>
+            <td style="padding:6px 8px;color:var(--muted);">Scopes / permisos requeridos</td>
+            <td style="padding:6px 8px;">
+              <strong style="color:var(--accent);">Fine-grained:</strong>
+              <code>Pull requests: Read</code> · <code>Metadata: Read</code> · <code>Contents: Read</code>
+              <br>
+              <strong style="color:var(--accent);">Classic (alternativa):</strong>
+              <code>repo</code>, <code>read:user</code>
+            </td>
+            <td style="padding:6px 8px;">
+              En la GitHub App, en <em>Permissions &amp; events</em>:
+              <code>Repository: Pull requests (Read)</code>, <code>Metadata: Read</code>
+              <br>
+              En <em>Callback URL</em>: <code>http://localhost:8765/auth/callback</code>
+            </td>
+          </tr>
+          <tr style="background:var(--bg-secondary);">
+            <td style="padding:6px 8px;color:var(--muted);">Ventajas</td>
+            <td style="padding:6px 8px;">
+              ✓ Setup en 1 minuto<br>
+              ✓ No necesitás registrar nada<br>
+              ✓ Funciona offline / headless<br>
+              ✓ Ideal para uso personal / local-first
+            </td>
+            <td style="padding:6px 8px;">
+              ✓ Tokens rotan automáticamente<br>
+              ✓ No guardás secretos largos en <code>.env</code><br>
+              ✓ Podés revocar acceso desde GitHub en cualquier momento<br>
+              ✓ Ideal para compartir el deploy con tu equipo
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:6px 8px;color:var(--muted);">Trade-offs</td>
+            <td style="padding:6px 8px;">
+              ✗ El token vence (fine-grained: 1 año; classic: configurable)<br>
+              ✗ Si lo perdés, tenés que regenerar y volver a pegar<br>
+              ✗ Permisos broad si usás classic
+            </td>
+            <td style="padding:6px 8px;">
+              ✗ Registrar la GitHub App lleva ~10 min<br>
+              ✗ Necesitás el flujo del navegador para autenticar<br>
+              ✗ Callback URL está atado al host donde corre tl_towerwatch
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {# ----------------------------------------------------------------
+         Active-mode credentials editor.
+         PAT mode shows the token chip + replace flow.
+         OAuth mode shows client_id + client_secret + a "complete OAuth
+         flow" hint.
+         ---------------------------------------------------------------- #}
+      {% if auth_mode == 'pat' %}
+      <div data-testid="pat-config"
+           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <strong style="color:var(--fg);font-size:13px;">🔑 Token activo</strong>
+          <span style="color:var(--success);font-size:11px;">
+            {% if settings.github_token %}✓ configurado{% else %}✗ no configurado{% endif %}
+          </span>
+        </div>
+        <div data-testid="pat-token-chip"
+             style="background:var(--card);border:1px solid var(--border);border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:var(--accent);margin-bottom:8px;">
+          <span data-testid="pat-token-display">ghp_••••••••••••••••••••••••••••••••••••••••{{ token_last4 }}</span>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
+            Reemplazar token
+          </label>
+          <input name="github_token_edit" type="password"
+                 placeholder="ghp_…{% if token_last4 %}(actual termina en ...{{ token_last4 }}){% endif %}"
+                 autocomplete="off"
+                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;">
+            Dejá en blanco para no cambiar. Se guarda en <code>.env</code> como
+            <code>TOWERWATCH_GITHUB_TOKEN</code>.
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <form method="post" action="/settings/auth/test" style="margin:0">
+            <button type="submit"
+                    style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+              🔄 Probar conexión
+            </button>
+          </form>
         </div>
       </div>
       {% endif %}
 
       {% if auth_mode == 'oauth' %}
-      <div style="margin-bottom:14px;display:grid;gap:10px;">
+      <div data-testid="oauth-config"
+           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px;">
+        <strong style="color:var(--fg);font-size:13px;">🔑 Credenciales OAuth</strong>
         <div>
           <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">OAuth client_id</label>
           <input name="github_oauth_client_id_edit"
@@ -134,92 +273,36 @@
                  autocomplete="off"
                  style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
         </div>
-        <div style="color:var(--muted);font-size:11px;">
-          Dejá en blanco para no cambiar. Callback URL:
+        <div style="color:var(--muted);font-size:11px;line-height:1.5;">
+          Después de guardar, ejecutá <code>tl_towerwatch auth login</code> para que
+          GitHub te devuelva el <code>access_token</code> vía el navegador.
+          Callback URL configurado en la App:
           <code>http://localhost:8765/auth/callback</code>.
         </div>
+        <form method="post" action="/settings/auth/test" style="margin:0">
+          <button type="submit"
+                  style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+            🔄 Probar conexión
+          </button>
+        </form>
       </div>
       {% endif %}
 
       <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
-        <button type="submit"
+        <button type="submit" data-testid="save-auth-btn"
                 style="background:var(--success);color:#fff;border:0;padding:8px 18px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
           Guardar Auth
         </button>
-      </div>
-
-      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
-        Modo de autenticación
-      </label>
-      <div style="display:flex;gap:6px;margin-bottom:14px;">
-        <label data-testid="auth-mode-pat"
-               style="flex:1;padding:10px 12px;{% if auth_mode == 'pat' %}background:var(--bg-secondary);border:2px solid var(--success);{% else %}background:var(--bg-secondary);border:1px solid var(--border);{% endif %}border-radius:6px;cursor:pointer;">
-          <input type="radio" name="auth_mode" value="pat"
-                 {% if auth_mode == 'pat' %}checked{% endif %}
-                 style="margin-right:6px;">
-          <strong style="color:{% if auth_mode == 'pat' %}var(--success){% else %}var(--fg){% endif %};font-size:13px;">Personal Access Token</strong>
-          <div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4;">
-            Pegás un PAT de GitHub. Simple, portable, sin registrar nada.
-          </div>
-        </label>
-        <label data-testid="auth-mode-oauth"
-               style="flex:1;padding:10px 12px;{% if auth_mode == 'oauth' %}background:var(--bg-secondary);border:2px solid var(--success);{% else %}background:var(--bg-secondary);border:1px solid var(--border);{% endif %}border-radius:6px;cursor:pointer;">
-          <input type="radio" name="auth_mode" value="oauth"
-                 {% if auth_mode == 'oauth' %}checked{% endif %}
-                 style="margin-right:6px;">
-          <strong style="color:{% if auth_mode == 'oauth' %}var(--success){% else %}var(--fg){% endif %};font-size:13px;">GitHub App + OAuth</strong>
-          <div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.4;">
-            Login OAuth desde el navegador. Necesita App registrada.
-          </div>
-        </label>
-      </div>
-
-      {% if auth_mode == 'pat' %}
-      <div data-testid="pat-config"
-           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <strong style="color:var(--fg);font-size:13px;">Token</strong>
-          <span style="color:var(--success);font-size:11px;">
-            {% if settings.github_token %}✓ válido · creado hace 14d{% else %}✗ no configurado{% endif %}
-          </span>
-        </div>
-        <div data-testid="pat-token-chip"
-             style="background:var(--card);border:1px solid var(--border);border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:var(--accent);margin-bottom:8px;">
-          <span data-testid="pat-token-display">ghp_••••••••••••••••••••••••••••••••••••••••{{ token_last4 }}</span>
-        </div>
-        <div style="display:flex;gap:6px;">
-          <form method="post" action="/settings/auth/test" style="margin:0">
-            <button type="submit"
-                    style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
-              🔄 Probar conexión
-            </button>
-          </form>
-          <a href="#pat-token-chip"
-             style="background:var(--card);color:var(--fg);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;text-decoration:none;">
-            ✏ Reemplazar token
-          </a>
-        </div>
-        <div style="color:var(--muted);font-size:11px;margin-top:10px;line-height:1.5;">
-          Almacenado en <code>.env</code> (<code>TOWERWATCH_GITHUB_TOKEN</code>).<br>
-          Scopes requeridos: <code>repo</code>, <code>read:user</code>.
-        </div>
-      </div>
-      {% endif %}
-
-      <div data-testid="oauth-hint"
-           style="background:var(--bg-secondary);border:1px dashed var(--border);border-radius:6px;padding:10px 12px;color:var(--muted);font-size:12px;line-height:1.5;">
-        <strong style="color:var(--fg);">Si elegís OAuth</strong> necesitás registrar tu propia GitHub App
-        (<a href="#" style="color:var(--accent);">ver guía paso a paso</a>) y pegar abajo
-        client_id + client_secret. Callback: <code>http://localhost:8765/auth/callback</code>.
       </div>
     </form>
   </div>
 
   {# ========================================================================
      RIGHT — Skills registry + per-skill prompts editor
-     v1.3.0: replaces the LLM card. Three prompt slots per skill
-     (review / post_review / check_resolved), each a textarea the user
-     can edit and save in bulk via /settings/skills.
+     v1.3.0: the prompt editor is ALWAYS VISIBLE (no <details> to expand).
+     Each skill block shows the name + description + enabled checkbox at the
+     top, and the 3 prompt slots underneath as textareas. The user can
+     paste custom templates or click "Restore default" per skill to reset.
      ======================================================================== #}
   <div class="card" data-testid="skills-card">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
@@ -231,48 +314,92 @@
     </div>
 
     <p style="margin:0 0 14px 0;color:var(--muted);font-size:12px;line-height:1.5;">
-      Cada skill define 3 prompts:
+      Cada skill define <strong style="color:var(--accent);">3 prompts</strong>:
       <strong style="color:var(--accent);">review</strong> (análisis del diff),
       <strong style="color:var(--accent);">post_review</strong> (resumen del output) y
       <strong style="color:var(--accent);">check_resolved</strong> (verificar si los comentarios fueron resueltos).
-      Los placeholders <code>{title}</code>, <code>{body}</code>, <code>{author}</code>, <code>{diff}</code>,
-      <code>{findings}</code> y <code>{mode_intro}</code> se rellenan automáticamente.
+      Los placeholders <code>{title}</code>, <code>{body}</code>, <code>{author}</code>,
+      <code>{diff}</code>, <code>{files}</code>, <code>{findings}</code> y
+      <code>{mode_intro}</code> se rellenan automáticamente cuando rendereás el prompt.
     </p>
 
     <form method="post" action="/settings/skills" data-testid="skills-form">
       {% if enabled_skills %}
         {% for skill in enabled_skills %}
-        <details open data-testid="skill-row-{{ skill.name }}"
-                 style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:10px;">
-          <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--fg);list-style:none;display:flex;align-items:center;gap:8px;">
-            <input type="checkbox"
-                   name="skill.{{ skill.name }}.enabled"
-                   {% if skill.enabled %}checked{% endif %}
-                   style="margin:0;">
-            <span>{{ skill.name }}</span>
-            <span style="color:var(--muted);font-weight:400;font-size:11px;flex:1;">{{ skill.description }}</span>
-            <span style="color:var(--muted);font-size:10px;">▾</span>
-          </summary>
+        <div data-testid="skill-row-{{ skill.name }}"
+             style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:12px;">
+          {# Skill header: checkbox + name + description + CLI flag #}
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <label style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer;">
+              <input type="checkbox"
+                     name="skill.{{ skill.name }}.enabled"
+                     {% if skill.enabled %}checked{% endif %}
+                     style="margin:0;width:16px;height:16px;">
+              <div style="flex:1;">
+                <div style="color:var(--fg);font-size:13px;font-weight:600;">
+                  {{ skill.name }}
+                  {% if skill.cli_flag %}
+                  <code style="background:var(--code-bg);padding:1px 6px;border-radius:3px;color:var(--accent);font-size:10px;margin-left:4px;font-weight:400;">
+                    {{ skill.cli_flag }}
+                  </code>
+                  {% endif %}
+                </div>
+                <div style="color:var(--muted);font-size:11px;margin-top:2px;line-height:1.4;">
+                  {{ skill.description }}
+                </div>
+              </div>
+            </label>
+          </div>
           <input type="hidden" name="skill.{{ skill.name }}.name" value="{{ skill.name }}">
           <input type="hidden" name="skill.{{ skill.name }}.cli_flag" value="{{ skill.cli_flag }}">
           <input type="hidden" name="skill.{{ skill.name }}.description" value="{{ skill.description }}">
-          <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px;">
+
+          {# Prompt editor — 3 textareas, one per slot, ALWAYS visible #}
+          <div style="display:flex;flex-direction:column;gap:10px;">
             {% for slot in prompt_slots %}
-            <div>
-              <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
-                {{ slot.replace('_', ' ') }}
-              </label>
+            {% set slot_descriptions = {
+              'review': 'Se usa cuando abrís la tab "review" del prompt viewer. Recibís el diff completo y debés devolver hallazgos estructurados.',
+              'post_review': 'Se usa cuando pedís un resumen de los hallazgos que ya generaste (resumir el output del review).',
+              'check_resolved': 'Se usa cuando querés verificar si los comentarios fueron resueltos en commits posteriores.'
+            } %}
+            <div data-testid="skill-{{ skill.name }}-prompt-{{ slot }}-row">
+              <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;">
+                <label style="font-size:11px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.5px;">
+                  {{ slot.replace('_', ' ') }}
+                </label>
+                <span style="color:var(--muted);font-size:11px;">
+                  · {{ slot_descriptions.get(slot, '') }}
+                </span>
+              </div>
               <textarea name="skill.{{ skill.name }}.prompt.{{ slot }}"
                         data-testid="skill-{{ skill.name }}-prompt-{{ slot }}"
-                        style="width:100%;min-height:90px;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 10px;border-radius:4px;font-family:monospace;font-size:12px;box-sizing:border-box;resize:vertical;">{{ skill.prompts.get(slot, '') }}</textarea>
+                        rows="4"
+                        placeholder="Dejá vacío para usar el template por defecto…"
+                        style="width:100%;min-height:90px;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:10px 12px;border-radius:5px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.5;box-sizing:border-box;resize:vertical;">{{ skill.prompts.get(slot, '') }}</textarea>
             </div>
             {% endfor %}
           </div>
-        </details>
+        </div>
         {% endfor %}
       {% else %}
         <p style="color:var(--muted);font-size:12px;">0 skills configuradas. Creá un bloque <code>skills:</code> en <code>config.yaml</code> o reinstalá la app para obtener los defaults.</p>
       {% endif %}
+
+      {# Placeholders cheat sheet — visible so the user knows what they can reference. #}
+      <details style="margin-bottom:14px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--accent);list-style:none;">
+          📚 Placeholders disponibles en los templates ▾
+        </summary>
+        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:10px 12px;margin-top:8px;font-size:12px;color:var(--muted);line-height:1.6;">
+          <code style="color:var(--fg);">{title}</code> — título del PR<br>
+          <code style="color:var(--fg);">{body}</code> — descripción pública del PR (de GitHub)<br>
+          <code style="color:var(--fg);">{author}</code> — login del autor del PR<br>
+          <code style="color:var(--fg);">{diff}</code> — diff completo, truncado a 2000 líneas / 30 archivos<br>
+          <code style="color:var(--fg);">{files}</code> — lista de archivos modificados con +/- stats<br>
+          <code style="color:var(--fg);">{findings}</code> — salida del step anterior (para <code>post_review</code> y <code>check_resolved</code>)<br>
+          <code style="color:var(--fg);">{mode_intro}</code> — bloque introductorio según el modo (fresh / compare)
+        </div>
+      </details>
 
       <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px;">
         <button type="submit" data-testid="save-skills-btn"
