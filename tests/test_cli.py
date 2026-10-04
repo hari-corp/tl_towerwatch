@@ -77,8 +77,38 @@ def test_init_pat_path_writes_config(tmp_path: Path, monkeypatch):
         "tl_towerwatch.auth.github.resolve_token",
         lambda settings: "ghp_test",
     )
-    runner.invoke(app, ["init"], input="")
+    r = runner.invoke(app, ["init"], input="")
+    assert r.exit_code == 0, f"init failed: {r.stdout!r} {r.exception!r}"
     cfg = (tmp_path / "config.yaml").read_text()
     assert "auth:" in cfg
     assert "mode: pat" in cfg
     assert "default_provider: anthropic" in cfg
+    # Fix round 1: also assert the .env write happened and contains the token,
+    # which exercises _env_lines_for (the verifier-flagged defect).
+    env_file = tmp_path / ".env"
+    assert env_file.exists()
+    env_text = env_file.read_text()
+    assert "TOWERWATCH_GITHUB_TOKEN=ghp_test" in env_text
+
+
+def test_init_oauth_path_persists_oauth_fields(tmp_path: Path, monkeypatch):
+    """v1.1 init wizard (Task 3, fix round 1): the OAuth branch must
+    persist client_id and client_secret into .env using the
+    TOWERWATCH_GITHUB_OAUTH_* env-var names (matching v1.0 fix I5 rename).
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    responses = iter(
+        ["oauth", "cid", "csec", "anthropic", "claude-3-5-sonnet-latest"]
+    )
+    monkeypatch.setattr("typer.prompt", lambda *a, **kw: next(responses))
+    monkeypatch.setattr("typer.confirm", lambda *a, **kw: False)
+    r = runner.invoke(app, ["init"], input="")
+    assert r.exit_code == 0, f"init failed: {r.stdout!r} {r.exception!r}"
+    cfg = (tmp_path / "config.yaml").read_text()
+    assert "auth:" in cfg
+    assert "mode: oauth" in cfg
+    env_file = tmp_path / ".env"
+    assert env_file.exists()
+    env_text = env_file.read_text()
+    assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID=cid" in env_text
+    assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET=csec" in env_text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import typer
 from rich.console import Console
@@ -47,10 +48,10 @@ def _env_lines_for(s):
     lines = []
     if s.github_token:
         lines.append(f"TOWERWATCH_GITHUB_TOKEN={s.github_token}")
-    if s.oauth_client_id:
-        lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_ID={s.oauth_client_id}")
-    if s.oauth_client_secret:
-        lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET={s.oauth_client_secret}")
+    if s.github_oauth_client_id:
+        lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_ID={s.github_oauth_client_id}")
+    if s.github_oauth_client_secret:
+        lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET={s.github_oauth_client_secret}")
     if s.llm.anthropic.api_key:
         lines.append(f"TOWERWATCH_ANTHROPIC_API_KEY={s.llm.anthropic.api_key}")
     if s.llm.openai.api_key:
@@ -83,8 +84,8 @@ def init():
     else:
         cid = typer.prompt("OAuth client_id")
         csec = typer.prompt("OAuth client_secret", hide_input=True)
-        settings.oauth_client_id = cid
-        settings.oauth_client_secret = csec
+        settings.github_oauth_client_id = cid
+        settings.github_oauth_client_secret = csec
         typer.echo(
             "Run `tl_towerwatch auth login` to complete the browser flow."
         )
@@ -120,7 +121,12 @@ def init():
             },
         },
     )
-    (settings.data_dir / ".env").write_text(_env_lines_for(settings))
+    # Atomic write (.env.tmp → os.replace) so a partial write can't leave
+    # the wizard with a half-empty file (matches _persist_env in auth/github.py).
+    env_path = settings.data_dir / ".env"
+    env_tmp = env_path.with_suffix(".env.tmp")
+    env_tmp.write_text(_env_lines_for(settings))
+    os.replace(env_tmp, env_path)
     typer.echo(
         "✓ Init complete. Next: tl_towerwatch repo add owner/name"
     )
