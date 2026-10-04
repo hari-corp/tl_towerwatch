@@ -18,9 +18,12 @@ from tl_towerwatch.services.pull_requests import (
     sync_repo,
 )
 from tl_towerwatch.services.repos import (
+    add_allowed_author,
     add_repo,
+    clear_allowed_authors,
     list_repos,
     normalize_authors,
+    remove_allowed_author,
     set_allowed_authors,
 )
 from tl_towerwatch.services.review_runner import run_review
@@ -47,6 +50,18 @@ def test_set_allowed_authors_normalizes(tmp_path: Path):
 
 def test_normalize_authors_dedupes():
     assert normalize_authors(["Marta.G", "marta.g", " luis.f "]) == ["luis.f", "marta.g"]
+
+def test_repo_add_remove_clear_author(tmp_path):
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    add_allowed_author(db, "o", "n", "marta.g")
+    assert json.loads(list_repos(db)[0].allowed_authors_json) == ["marta.g"]
+    add_allowed_author(db, "o", "n", "luis.f")
+    assert json.loads(list_repos(db)[0].allowed_authors_json) == ["luis.f", "marta.g"]
+    remove_allowed_author(db, "o", "n", "luis.f")
+    assert json.loads(list_repos(db)[0].allowed_authors_json) == ["marta.g"]
+    clear_allowed_authors(db, "o", "n")
+    assert json.loads(list_repos(db)[0].allowed_authors_json) == []
 
 
 @respx.mock

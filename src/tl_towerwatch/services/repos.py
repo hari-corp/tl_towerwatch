@@ -76,3 +76,22 @@ def set_allowed_authors(db: Database, owner: str, name: str, authors: list[str])
         if r is None:
             raise KeyError(f"{owner}/{name} not registered")
         r.allowed_authors_json = json.dumps(normalize_authors(authors))
+
+def add_allowed_author(db: Database, owner: str, name: str, login: str) -> None:
+    with db.session() as s:
+        r = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
+        current = json.loads(r.allowed_authors_json or "[]")
+        new = normalize_authors(current + [login])
+        r.allowed_authors_json = json.dumps(new)
+
+def remove_allowed_author(db: Database, owner: str, name: str, login: str) -> None:
+    with db.session() as s:
+        r = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
+        current = json.loads(r.allowed_authors_json or "[]")
+        new = [a for a in current if a != login.lower().lstrip("@")]
+        r.allowed_authors_json = json.dumps(new)
+
+def clear_allowed_authors(db: Database, owner: str, name: str) -> None:
+    with db.session() as s:
+        r = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one()
+        r.allowed_authors_json = json.dumps([])

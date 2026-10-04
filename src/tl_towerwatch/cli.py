@@ -5,14 +5,19 @@ import json
 import typer
 from rich.console import Console
 from rich.table import Table
+from sqlalchemy import select
 
 from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
+from tl_towerwatch.db.models import Repo
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.services.repos import (
+    add_allowed_author,
     add_repo,
+    clear_allowed_authors,
     list_repos,
+    remove_allowed_author,
     remove_repo,
     set_allowed_authors,
     set_repo_enabled,
@@ -22,6 +27,8 @@ from tl_towerwatch.services.review_runner import run_review
 app = typer.Typer(help="tl_towerwatch — local PR dashboard for tech leads")
 repo_app = typer.Typer(help="Manage watched repos")
 app.add_typer(repo_app, name="repo")
+auth_app = typer.Typer(help="Auth-related subcommands")
+app.add_typer(auth_app, name="auth")
 
 console = Console()
 
@@ -108,6 +115,76 @@ def repo_set_authors(
     owner, name = owner_name.split("/", 1)
     set_allowed_authors(db, owner, name, [a for a in authors.split(",") if a.strip()])
     typer.echo(f"✓ Updated allowed_authors for {owner}/{name}")
+
+@repo_app.command("add-author")
+def repo_add_author(owner_name: str = typer.Argument(...), login: str = typer.Argument(...)):
+    db = _db()
+    o, name = owner_name.split("/", 1)
+    add_allowed_author(db, o, name, login)
+    typer.echo(f"✓ Added {login} to {owner_name}")
+
+@repo_app.command("remove-author")
+def repo_remove_author(owner_name: str = typer.Argument(...), login: str = typer.Argument(...)):
+    db = _db()
+    o, name = owner_name.split("/", 1)
+    remove_allowed_author(db, o, name, login)
+    typer.echo(f"✓ Removed {login} from {owner_name}")
+
+@repo_app.command("clear-authors")
+def repo_clear_authors(owner_name: str = typer.Argument(...)):
+    db = _db()
+    o, name = owner_name.split("/", 1)
+    clear_allowed_authors(db, o, name)
+    typer.echo(f"✓ Cleared allowed_authors for {owner_name}")
+
+@app.command()
+def refresh(repo: str = typer.Option("", "--repo", help="owner/name")):
+    """Refresh PRs from GitHub."""
+    db = _db()
+    settings = load_settings()
+    from tl_towerwatch.services.pull_requests import sync_repo, sync_one_pr
+    with GitHubClient(token=resolve_token(settings)) as gh:
+        if repo:
+            o, name = repo.split("/", 1)
+            with db.session() as s:
+                r = s.execute(select(Repo).where(Repo.owner == o, Repo.name == name)).scalar_one()
+            sync_repo(db, gh, r)
+        else:
+            from tl_towerwatch.services.repos import list_repos
+            for r in list_repos(db, enabled_only=True):
+                sync_repo(db, gh, r)
+    typer.echo("✓ Refresh complete")
+
+@app.command()
+def status():
+    """Show current user, last refresh, rate limit, repo counts."""
+    db = _db()
+    settings = load_settings()
+    from tl_towerwatch.services.repos import list_repos
+    repos = list_repos(db)
+    typer.echo(f"Repos: {len(repos)} ({sum(1 for r in repos if r.enabled)} enabled)")
+    for r in repos:
+        typer.echo(f"  {r.owner}/{r.name}: last fetch {r.last_fetched_at or '—'} ({r.last_fetch_status or '—'})")
+
+@app.command("config")
+def status_config():
+    """Print current effective settings (no secrets)."""
+    s = load_settings()
+    safe = {
+        "auth.mode": s.auth.mode,
+        "llm.default_provider": s.llm.default_provider,
+        "theme": s.theme,
+        "refresh_interval_seconds": s.refresh_interval_seconds,
+    }
+    typer.echo(json.dumps(safe, indent=2, default=str))
+
+@auth_app.command("refresh")
+def auth_refresh_cmd():
+    """Refresh OAuth access token."""
+    from tl_towerwatch.auth.github import refresh_oauth_token
+    s = load_settings()
+    refresh_oauth_token(s)
+    typer.echo("✓ OAuth token refreshed")
 
 @app.command()
 def serve(host: str = typer.Option("127.0.0.1"),

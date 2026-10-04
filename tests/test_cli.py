@@ -31,3 +31,34 @@ def test_review_help():
     assert "--skills" in result.stdout
     assert "--mode" in result.stdout
     assert "--watch" in result.stdout
+
+def test_repo_add_author_help():
+    r = runner.invoke(app, ["repo", "add-author", "--help"])
+    assert r.exit_code == 0
+    assert "login" in r.stdout
+
+def test_repo_remove_author_help():
+    r = runner.invoke(app, ["repo", "remove-author", "--help"])
+    assert r.exit_code == 0
+    assert "login" in r.stdout
+
+def test_repo_clear_authors_help():
+    r = runner.invoke(app, ["repo", "clear-authors", "--help"])
+    assert r.exit_code == 0
+
+def test_refresh_help():
+    r = runner.invoke(app, ["refresh", "--help"])
+    assert r.exit_code == 0
+    assert "--repo" in r.stdout
+
+def test_status_help():
+    r = runner.invoke(app, ["status", "--help"])
+    assert r.exit_code == 0
+
+def test_config_help():
+    r = runner.invoke(app, ["config", "--help"])
+    assert r.exit_code == 0
+
+def test_auth_refresh_help():
+    r = runner.invoke(app, ["auth", "refresh", "--help"])
+    assert r.exit_code == 0
