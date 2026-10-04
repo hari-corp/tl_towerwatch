@@ -97,6 +97,49 @@ def test_theme_validates_input(tmp_path, monkeypatch):
         r = c.post("/theme", data={"theme": "rainbow"})
         assert r.status_code == 400
 
+
+def test_theme_form_posts_to_theme_endpoint(tmp_path, monkeypatch, respx_mock):
+    """Regression — the v1.2.0 top-bar theme form had `hx-post="/theme"`
+    but no standard `action` attribute. `onchange="this.form.submit()"`
+    bypassed htmx and submitted the form to the current URL (e.g.
+    /settings), not /theme — so the browser got 405 and the page never
+    navigated. The cookie did get set by htmx's parallel request but
+    the page never reloaded with the new theme, so the user saw no
+    visual change. Required the user to re-click or navigate manually
+    to see the theme switch land.
+
+    After the fix the form is a plain `<form method="post"
+    action="/theme">` so the standard submit lands on /theme, gets a
+    303 redirect to /, and the browser re-renders with the new theme.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        # 1. Form HTML must have a proper action so the browser submits
+        #    to /theme (not the current page).
+        r = c.get("/settings")
+        assert r.status_code == 200
+        assert 'action="/theme"' in r.text
+        assert 'method="post"' in r.text
+        # 2. End-to-end POST → 303 → / → page renders with the new theme.
+        r = c.post("/theme", data={"theme": "light"}, follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/"
+        assert c.cookies["tl_towerwatch_theme"] == "light"
+        # 3. Following the redirect renders the page with data-theme="light"
+        #    so the CSS variables actually flip.
+        r = c.get("/", follow_redirects=False)
+        assert r.status_code == 200
+        # The base.html writes data-theme="{{ theme }}" on the <html> tag.
+        assert 'data-theme="light"' in r.text
+
 def test_dashboard_renders_empty(tmp_path, monkeypatch, respx_mock):
     # v1.1 (Task 10): the dashboard now eagerly validates the configured token
     # so a 401 bounces to /settings. Stub /user with a valid scopes header so

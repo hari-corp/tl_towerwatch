@@ -52,7 +52,7 @@
       {% if rl %}
         <span class="pill">● API OK · {{ rl.remaining }} restantes</span>
       {% endif %}
-      <form hx-post="/theme" hx-swap="none" hx-trigger="change from:select" style="display:inline">
+      <form method="post" action="/theme" style="display:inline">
         <select name="theme" onchange="this.form.submit()" aria-label="theme">
           <option value="dark"  {% if theme=='dark'  %}selected{% endif %}>🌙 dark</option>
           <option value="light" {% if theme=='light' %}selected{% endif %}>☀ light</option>
