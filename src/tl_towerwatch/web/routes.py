@@ -23,7 +23,7 @@ from tl_towerwatch.db.models import (
 )
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.llm import get_provider
-from tl_towerwatch.services.pull_requests import list_prs_for_dashboard, sync_one_pr
+from tl_towerwatch.services.pull_requests import list_prs_for_dashboard, sync_one_pr, sync_repo
 from tl_towerwatch.services.repos import (
     add_repo as svc_add_repo,
 )
@@ -120,6 +120,16 @@ def index(request: Request):
         return token
     login = "dimh"  # TODO: derive from auth in Task 18
     prs = list_prs_for_dashboard(db, login=login, scope_filter="mine_and_review")
+    # PullRequest only carries repo_id (FK); the template needs owner/name to
+    # build detail-page links and per-PR action buttons. Resolve once here.
+    with db.session() as s:
+        repos_by_id: dict[int, Repo] = {
+            r.id: r for r in s.execute(select(Repo)).scalars()
+        }
+    for pr in prs:
+        repo = repos_by_id.get(pr.repo_id)
+        pr.repo_owner = repo.owner if repo else ""
+        pr.repo_name = repo.name if repo else ""
     # Status counters per spec §5.1. `compute_badges` uses its own names
     # (`pending_response`, `approved`, ...) that don't 1:1 match the spec
     # counter names (`needs_response`, `ready_to_merge`, ...), so translate
@@ -145,6 +155,28 @@ def index(request: Request):
         {"nav": "home", "theme": _theme(request),
          "prs": prs, "badges_by_pr": badges_by_pr,
          "login": login, "counts": counts})
+
+@router.post("/refresh-all")
+def refresh_all():
+    """Sync every enabled repo's open PRs from GitHub into the local cache.
+
+    Used by the dashboard's "Refresh PRs" button. Errors per-repo are
+    captured on the Repo row (last_fetch_status / last_fetch_error) so a
+    single bad repo can't poison the rest of the sync. On auth failure
+    the route bounces to /settings?error=github_auth, matching the
+    per-PR refresh path (Task 10).
+    """
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
+    repos = svc_list_repos(db, enabled_only=True)
+    llm = get_provider(settings) if settings.llm.anthropic.api_key else None
+    with GitHubClient(token=token) as gh:
+        for repo in repos:
+            sync_repo(db, gh, repo, llm=llm)
+    return RedirectResponse("/", status_code=303)
 
 @router.get("/repos", response_class=HTMLResponse)
 def repos_page(request: Request):

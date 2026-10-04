@@ -1,6 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>PRs</h1>
+<div style="display:flex;align-items:baseline;gap:12px;justify-content:space-between;">
+  <h1 style="margin:0">PRs</h1>
+  <form method="post" action="/refresh-all" style="margin:0">
+    <button type="submit"
+            style="padding:6px 12px;border:1px solid var(--accent);border-radius:6px;background:var(--card);color:var(--accent);font-weight:600;font-size:13px;cursor:pointer;">
+      ↻ Refresh PRs
+    </button>
+  </form>
+</div>
 <p style="color:var(--muted)">{{ prs|length }} PRs visibles · login: {{ login }}</p>
 <div style="display:flex;gap:10px;padding:16px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border);font-size:12px;">
   {% for k, v in counts.items() %}
@@ -12,13 +20,44 @@
 </div>
 {% for pr in prs %}
 <div class="card" style="margin-bottom:10px">
-  <strong>{{ pr.title }}</strong>
+  <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
+    <a href="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}"
+       style="color:inherit;text-decoration:none;flex:1">
+      <strong>{{ pr.title }}</strong>
+    </a>
+    <span style="color:var(--muted);font-size:11px;font-family:monospace">
+      {{ pr.repo_owner }}/{{ pr.repo_name }}#{{ pr.number }}
+    </span>
+  </div>
   <div style="color:var(--muted);font-size:12px;margin-top:4px">
     {{ pr.author_login }} · updated {{ pr.updated_at }} · head {{ pr.head_sha[:7] }}
   </div>
-  {% for b in badges_by_pr.get(pr.id, []) %}
-    <span style="background:{{ b.color }}22;color:{{ b.color }};padding:2px 8px;border-radius:10px;font-size:11px">{{ b.name }}</span>
-  {% endfor %}
+  <div style="margin-top:6px">
+    {% for b in badges_by_pr.get(pr.id, []) %}
+      <span style="background:{{ b.color }}22;color:{{ b.color }};padding:2px 8px;border-radius:10px;font-size:11px">{{ b.name }}</span>
+    {% endfor %}
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px;font-size:12px">
+    <form method="post"
+          action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/refresh"
+          style="margin:0">
+      <button type="submit"
+              style="padding:3px 9px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);cursor:pointer;font-size:12px">
+        Refresh
+      </button>
+    </form>
+    <form method="post"
+          action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/run-review"
+          style="margin:0">
+      <input type="hidden" name="agent" value="claude">
+      <input type="hidden" name="skills" value="">
+      <input type="hidden" name="mode" value="fresh">
+      <button type="submit"
+              style="padding:3px 9px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:white;cursor:pointer;font-size:12px">
+        ▶ Run review
+      </button>
+    </form>
+  </div>
 </div>
 {% else %}
 <p>0 PRs. Usa <code>tl_towerwatch repo add owner/name</code> para empezar.</p>

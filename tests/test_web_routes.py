@@ -493,3 +493,116 @@ def test_pr_detail_serves_tabs_data(tmp_path, monkeypatch):
         # The pending finding also renders its own status label so the
         # bug where all findings shared the same status word is caught.
         assert "pendiente" in body.lower()
+
+
+def test_dashboard_has_global_refresh_button(tmp_path, monkeypatch, respx_mock):
+    """Regression — the dashboard had no global "Refresh PRs" action, so
+    the only way to repopulate the cache from GitHub was the CLI. After
+    the fix the heading row includes a <form action="/refresh-all"> with
+    a Refresh button.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/")
+        assert r.status_code == 200
+        assert 'action="/refresh-all"' in r.text
+        assert "Refresh PRs" in r.text
+
+
+def test_dashboard_pr_cards_have_per_pr_actions(tmp_path, monkeypatch, respx_mock):
+    """Regression — the dashboard listed PRs as plain cards with no link
+    to the detail page and no per-PR refresh / run-review buttons, so
+    the dashboard was a dead end. After the fix each card links to the
+    detail route and exposes Refresh + Run review forms.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, User, now_iso
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "acme", "widgets")
+    with db.session() as s:
+        if s.get(User, "dimh") is None:
+            s.add(User(login="dimh"))
+        s.flush()
+        s.add(PullRequest(repo_id=repo.id, number=42, title="feat: hello",
+                          body=None, author_login="dimh", state="open",
+                          draft=0, head_sha="deadbeef", base_ref="main",
+                          html_url="https://example/pr/42",
+                          created_at=now_iso(), updated_at=now_iso(),
+                          cached_at=now_iso()))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/")
+        assert r.status_code == 200
+        body = r.text
+        # Card links to the PR detail page (owner/name/number).
+        assert 'href="/pr/acme/widgets/42"' in body
+        # Per-PR refresh + run-review forms target the existing routes.
+        assert 'action="/pr/acme/widgets/42/refresh"' in body
+        assert 'action="/pr/acme/widgets/42/run-review"' in body
+        # Owner/name is shown in monospace next to the title.
+        assert "acme/widgets" in body
+        assert "#42" in body
+
+
+def test_refresh_all_route_redirects_to_root(tmp_path, monkeypatch, respx_mock):
+    """POST /refresh-all must redirect back to / on success so the
+    dashboard reloads with fresh data."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    settings = load_settings(tmp_path)
+    # Ensure schema exists so list_repos + sync_repo don't blow up on a
+    # fresh tmp_path.
+    engine_from_settings(settings).create_all()
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/refresh-all", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/"
+
+
+def test_refresh_all_bounces_to_settings_on_auth_error(tmp_path, monkeypatch, respx_mock):
+    """When no GitHub token is configured the global refresh button must
+    not 500 — it bounces to /settings?error=github_auth like the
+    per-PR refresh path (Task 10)."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    # _load_env_file_into_environ() leaks into os.environ across tests,
+    # so defensively blank any TOWERWATCH_GITHUB_* env var set by a
+    # previous test. test_first_run_redirects_to_settings uses the same
+    # pattern (see that test for the full rationale).
+    for var in ("TOWERWATCH_GITHUB_TOKEN",
+                "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID",
+                "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET",
+                "TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN",
+                "TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/refresh-all", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"].startswith("/settings")
