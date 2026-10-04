@@ -162,4 +162,12 @@ class GitHubClient:
             requested_reviewers=[
                 u["login"] for u in pr.get("requested_reviewers", [])
             ],
+            # GitHub returns these on /pulls/:number but NOT on /pulls (list).
+            # List-loaded PRs will therefore carry 0/0/0; the per-PR refresh
+            # path (and any render that needs real stats) is expected to
+            # hit GET /pulls/:number so these land populated.
+            additions=pr.get("additions", 0),
+            deletions=pr.get("deletions", 0),
+            changed_files=pr.get("changed_files", 0),
+            commits_count=pr.get("commits", 0),
         )

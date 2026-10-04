@@ -32,6 +32,12 @@ class PullRequestData:
     requested_reviewers: list[str] = field(default_factory=list)
     author_avatar_url: str | None = None
     author_display_name: str | None = None
+    # Diff stats + commit count for the mock dashboard cards (e.g.
+    # "+247 / -89 líneas · 12 archivos · 3 commits post-creación").
+    additions: int = 0
+    deletions: int = 0
+    changed_files: int = 0
+    commits_count: int = 0
 
 @dataclass
 class ReviewData:

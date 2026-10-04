@@ -53,6 +53,12 @@ class PullRequest(Base):
     created_at = Column(String, nullable=False)
     updated_at = Column(String, nullable=False)
     cached_at = Column(String, nullable=False)
+    # Diff stats + commit count, populated from /pulls/:number (the list
+    # endpoint omits them, so list-synced PRs default to 0 until refreshed).
+    additions = Column(Integer, nullable=False, default=0)
+    deletions = Column(Integer, nullable=False, default=0)
+    changed_files = Column(Integer, nullable=False, default=0)
+    commits_count = Column(Integer, nullable=False, default=0)
     __table_args__ = (
         Index("uq_pr_repo_number", "repo_id", "number", unique=True),
         Index("idx_pr_repo", "repo_id"),

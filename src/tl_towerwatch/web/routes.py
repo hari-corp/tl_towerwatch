@@ -154,7 +154,8 @@ def index(request: Request):
     return templates.TemplateResponse(request, "dashboard.html",
         {"nav": "home", "theme": _theme(request),
          "prs": prs, "badges_by_pr": badges_by_pr,
-         "login": login, "counts": counts})
+         "login": login, "counts": counts,
+         **_user_context(db, login)})
 
 @router.post("/refresh-all")
 def refresh_all():
@@ -212,7 +213,8 @@ def repos_page(request: Request):
         r.allowed_authors_csv = ", ".join(authors)
     return templates.TemplateResponse(request, "repos.html",
         {"nav": "repos", "theme": _theme(request),
-         "repos": repo_rows, "rl": rl})
+         "repos": repo_rows, "rl": rl,
+         **_user_context(db, "dimh")})
 
 @router.post("/repos/add")
 def repos_add(owner_name: str = Form(...), authors: str = Form("")):
@@ -290,6 +292,26 @@ def _theme(request: Request) -> str:
     t = data.get("theme", "dark")
     return t if t in ALLOWED_THEMES else "dark"
 
+
+def _user_context(db, login: str) -> dict:
+    """Resolve the avatar + display name for the top bar from the User row
+    matching ``login``. Returns safe defaults so the top bar still renders
+    when the user row hasn't been synced yet (avatars stay optional)."""
+    from tl_towerwatch.db.models import User as UserModel
+    try:
+        with db.session() as s:
+            row = s.get(UserModel, login)
+    except Exception:
+        row = None
+    if row is None:
+        return {"user_login": login, "user_avatar_url": None}
+    return {
+        "user_login": login,
+        "user_avatar_url": row.avatar_url,
+        "user_display_name": row.display_name,
+    }
+
+
 @router.get("/pr/{owner}/{name}/{number}", response_class=HTMLResponse)
 def pr_detail(request: Request, owner: str, name: str, number: int):
     settings = load_settings()
@@ -359,7 +381,8 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
          "resolved_count": resolved_count,
          "pending_count": pending_count,
          "new_count": new_count,
-         "owner": owner, "name": name})
+         "owner": owner, "name": name,
+         **_user_context(db, "dimh")})
 
 @router.post("/pr/{owner}/{name}/{number}/refresh")
 def pr_refresh(owner: str, name: str, number: int):
@@ -398,9 +421,12 @@ def pr_run_review(owner: str, name: str, number: int,
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     settings = load_settings()
+    db = engine_from_settings(settings)
+    db.create_all()
     return templates.TemplateResponse(request, "settings.html",
         {"nav": "settings", "theme": _theme(request),
-         "settings": settings})
+         "settings": settings,
+         **_user_context(db, "dimh")})
 
 @router.post("/settings/auth/save")
 def settings_auth_save(github_token: str = Form(""),

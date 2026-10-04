@@ -55,6 +55,7 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
         for f in (
             "title", "body", "author_login", "state", "draft",
             "head_sha", "base_ref", "html_url", "created_at", "updated_at",
+            "additions", "deletions", "changed_files", "commits_count",
         ):
             setattr(existing, f, getattr(pr, f))
         existing.cached_at = now_iso()
@@ -73,6 +74,10 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
         created_at=pr.created_at,
         updated_at=pr.updated_at,
         cached_at=now_iso(),
+        additions=pr.additions,
+        deletions=pr.deletions,
+        changed_files=pr.changed_files,
+        commits_count=pr.commits_count,
     )
     s.add(new)
     s.flush()

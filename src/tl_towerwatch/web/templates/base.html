@@ -12,17 +12,29 @@
   </script>
   <script src="https://unpkg.com/htmx.org@1.9.10"></script>
   <style>
-    :root[data-theme="dark"]  { --bg:#0f1418; --fg:#e6edf3; --muted:#8b949e; --card:#161b22; --border:#2d333b; --accent:#58a6ff; }
-    :root[data-theme="light"] { --bg:#ffffff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --border:#d0d7de; --accent:#0969da; }
-    body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; margin:0; }
-    header.top { display:flex; justify-content:space-between; padding:14px 20px; background:var(--card); border-bottom:1px solid var(--border); }
-    header.top .brand { color:var(--accent); font-weight:700; }
-    header.top nav a { color:var(--muted); text-decoration:none; margin-right:14px; }
-    header.top nav a.active { color:var(--fg); border-bottom:2px solid var(--accent); padding-bottom:6px; }
+    :root[data-theme="dark"]  { --bg:#0f1418; --fg:#e6edf3; --muted:#8b949e; --card:#161b22; --bg-secondary:#0d1117; --border:#2d333b; --accent:#58a6ff; --success:#3fb950; --danger:#f85149; --warning:#d29922; --code-bg:#1f242c; }
+    :root[data-theme="light"] { --bg:#ffffff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --bg-secondary:#f3f4f6; --border:#d0d7de; --accent:#0969da; --success:#1a7f37; --danger:#cf222e; --warning:#9a6700; --code-bg:#eff1f3; }
+    body { background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,sans-serif; margin:0; }
+    header.top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:var(--card); border-bottom:1px solid var(--border); }
+    header.top .brand { color:var(--accent); font-weight:700; font-size:15px; }
+    header.top nav a { color:var(--muted); text-decoration:none; margin-right:18px; font-size:13px; padding-bottom:6px; }
+    header.top nav a.active { color:var(--fg); border-bottom:2px solid var(--warning); }
+    header.top .right { display:flex; gap:14px; align-items:center; font-size:12px; color:var(--muted); }
+    header.top .right .pill { background:var(--bg-secondary); padding:3px 10px; border-radius:10px; border:1px solid var(--border); }
+    header.top .right form select { background:var(--bg-secondary); color:var(--fg); border:1px solid var(--border); padding:4px 8px; border-radius:5px; font-size:13px; }
+    header.top .avatar { width:28px; height:28px; border-radius:50%; background:var(--bg-secondary); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--fg); overflow:hidden; }
+    header.top .avatar img { width:100%; height:100%; object-fit:cover; }
     main { padding:20px; }
     .card { background:var(--card); border:1px solid var(--border); border-radius:6px; padding:14px 16px; }
-    button { background:var(--card); color:var(--fg); border:1px solid var(--border); padding:5px 12px; border-radius:5px; cursor:pointer; }
-    button.primary { background:#238636; color:#fff; border:0; }
+    button { background:var(--card); color:var(--fg); border:1px solid var(--border); padding:5px 12px; border-radius:5px; cursor:pointer; font-size:13px; }
+    button.primary { background:var(--success); color:#fff; border:0; }
+    a { color:var(--accent); }
+    code { background:var(--code-bg); padding:1px 5px; border-radius:3px; font-size:0.9em; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+    .badge-success { background:rgba(63,185,80,0.15); color:var(--success); }
+    .badge-danger { background:rgba(248,81,73,0.15); color:var(--danger); }
+    .badge-warning { background:rgba(210,153,34,0.15); color:var(--warning); }
+    .badge-muted { background:var(--bg-secondary); color:var(--muted); border:1px solid var(--border); }
   </style>
 </head>
 <body>
@@ -35,13 +47,26 @@
         <a href="/settings" class="{% if nav=='settings' %}active{% endif %}">Settings</a>
       </nav>
     </div>
-    <div style="display:flex;gap:10px;align-items:center">
+    <div class="right">
+      {% block topbar_right %}
+      {% if rl %}
+        <span class="pill">● API OK · {{ rl.remaining }} restantes</span>
+      {% endif %}
       <form hx-post="/theme" hx-swap="none" hx-trigger="change from:select" style="display:inline">
-        <select name="theme" onchange="this.form.submit()">
+        <select name="theme" onchange="this.form.submit()" aria-label="theme">
           <option value="dark"  {% if theme=='dark'  %}selected{% endif %}>🌙 dark</option>
           <option value="light" {% if theme=='light' %}selected{% endif %}>☀ light</option>
+          <option value="system"{% if theme=='system'%}selected{% endif %}>🖥 system</option>
         </select>
       </form>
+      <div class="avatar" title="{{ user_login or 'anonymous' }}">
+        {% if user_avatar_url %}
+          <img src="{{ user_avatar_url }}" alt="">
+        {% else %}
+          {{ (user_login or '?')[:2]|upper }}
+        {% endif %}
+      </div>
+      {% endblock %}
     </div>
   </header>
   <main>{% block content %}{% endblock %}</main>
