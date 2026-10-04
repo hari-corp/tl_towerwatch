@@ -12,7 +12,15 @@ from tl_towerwatch.auth.github import resolve_token
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
 from tl_towerwatch.db.database import engine_from_settings
-from tl_towerwatch.db.models import PRSummary, PullRequest, Repo, ReviewRun
+from tl_towerwatch.db.models import (
+    PRSummary,
+    PullRequest,
+    Repo,
+    Review,
+    ReviewComment,
+    ReviewFinding,
+    ReviewRun,
+)
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.llm import get_provider
 from tl_towerwatch.services.pull_requests import list_prs_for_dashboard, sync_one_pr
@@ -36,6 +44,32 @@ from tl_towerwatch.services.reviews import compute_badges
 
 _TPL_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TPL_DIR))
+
+# Spec §5.2 — color and label per finding lifecycle status. Reused by the
+# pr_detail template (counters strip + per-finding badge) via the Jinja
+# filters registered below.
+_FINDING_STATUS_COLORS = {
+    "resolved": "#3fb950",
+    "pending":  "#d29922",
+    "new":      "#58a6ff",
+}
+_FINDING_STATUS_LABELS = {
+    "resolved": "✓ resuelto",
+    "pending":  "⚠ pendiente",
+    "new":      "🆕 nuevo",
+}
+
+
+def _status_color(status: str) -> str:
+    return _FINDING_STATUS_COLORS.get(status, "#8b949e")
+
+
+def _status_label(status: str) -> str:
+    return _FINDING_STATUS_LABELS.get(status, status or "")
+
+
+templates.env.filters["status_color"] = _status_color
+templates.env.filters["status_label"] = _status_label
 
 router = APIRouter()
 
@@ -176,22 +210,71 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
+    # Per spec §5.2 the PR detail exposes six tabs (Overview, Commits, Files,
+    # Reviews, Comments, tl_towerwatch reviews). The data dict we hand to
+    # the template carries everything each tab needs in a single round trip
+    # so the handler stays the single source of truth.
+    pr = None
+    summary = None
+    runs: list[ReviewRun] = []
+    human_reviews: list[Review] = []
+    human_comments: list[ReviewComment] = []
+    resolved_count = 0
+    pending_count = 0
+    new_count = 0
     with db.session() as s:
-        repo = s.execute(select(Repo).where(Repo.owner == owner, Repo.name == name)).scalar_one_or_none()
-        pr = None
-        summary = None
-        runs = []
+        repo = s.execute(select(Repo).where(
+            Repo.owner == owner, Repo.name == name
+        )).scalar_one_or_none()
         if repo:
             pr = s.execute(select(PullRequest).where(
                 PullRequest.repo_id == repo.id, PullRequest.number == number
             )).scalar_one_or_none()
             if pr:
                 summary = s.get(PRSummary, pr.id)
-                runs = list(s.execute(select(ReviewRun).where(ReviewRun.pr_id == pr.id)
-                             .order_by(ReviewRun.id.desc())).scalars())
+                # Reviews + comments for the human-facing tabs.
+                human_reviews = list(s.execute(
+                    select(Review).where(Review.pr_id == pr.id)
+                    .order_by(Review.submitted_at.asc())
+                ).scalars())
+                human_comments = list(s.execute(
+                    select(ReviewComment).where(ReviewComment.pr_id == pr.id)
+                    .order_by(ReviewComment.created_at.asc())
+                ).scalars())
+                # tl_towerwatch review runs (newest first). We attach the
+                # findings to each run so the template can render them in
+                # the loop without re-querying.
+                runs = list(s.execute(
+                    select(ReviewRun).where(ReviewRun.pr_id == pr.id)
+                    .order_by(ReviewRun.id.desc())
+                ).scalars())
+                findings_by_run: dict[int, list[ReviewFinding]] = {}
+                if runs:
+                    rows = list(s.execute(
+                        select(ReviewFinding).where(
+                            ReviewFinding.review_run_id.in_([r.id for r in runs])
+                        ).order_by(ReviewFinding.id.asc())
+                    ).scalars())
+                    for f in rows:
+                        findings_by_run.setdefault(f.review_run_id, []).append(f)
+                        if f.status == "resolved":
+                            resolved_count += 1
+                        elif f.status == "pending":
+                            pending_count += 1
+                        elif f.status == "new":
+                            new_count += 1
+                for run in runs:
+                    # Attach as a plain attribute; SQLAlchemy ORM instances
+                    # allow ad-hoc attributes for template consumption.
+                    run.findings = findings_by_run.get(run.id, [])
     return templates.TemplateResponse(request, "pr_detail.html",
         {"nav": "home", "theme": _theme(request),
-         "pr": pr, "summary": summary, "runs": runs, "owner": owner, "name": name})
+         "pr": pr, "summary": summary, "runs": runs,
+         "human_reviews": human_reviews, "human_comments": human_comments,
+         "resolved_count": resolved_count,
+         "pending_count": pending_count,
+         "new_count": new_count,
+         "owner": owner, "name": name})
 
 @router.post("/pr/{owner}/{name}/{number}/refresh")
 def pr_refresh(owner: str, name: str, number: int):

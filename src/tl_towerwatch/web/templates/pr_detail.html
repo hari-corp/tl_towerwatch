@@ -21,14 +21,137 @@
     <select name="mode"><option>fresh</option><option>compare</option></select>
     <button class="primary" type="submit">▶ Run review</button>
   </form>
-  {% if runs %}
-    <h3>Historial de reviews</h3>
-    {% for run in runs %}
-      <div class="card" style="margin-bottom:8px">
-        <strong>Run #{{ run.id }}</strong> · {{ run.status }} · {{ run.agent_runner }} · {{ run.started_at }}
-        {% if run.error %}<p style="color:#f78166">{{ run.error }}</p>{% endif %}
+
+  {# ----- Tabs (spec §5.2) -----
+     Six tabs in this order: Overview, Commits, Files, Reviews, Comments,
+     tl_towerwatch reviews. The tabs are rendered as a sticky nav row with
+     anchor links; each tab panel is anchored below. The default visible
+     panel is Overview; the tl_towerwatch reviews panel is the deepest and
+     gets the full findings breakdown. #}
+  <nav style="display:flex;gap:8px;margin:18px 0 12px 0;border-bottom:1px solid var(--border);">
+    <a href="#tab-overview" style="padding:8px 12px;color:var(--accent);text-decoration:none;border-bottom:2px solid var(--accent);">Overview</a>
+    <a href="#tab-commits"  style="padding:8px 12px;color:var(--muted);text-decoration:none;">Commits</a>
+    <a href="#tab-files"    style="padding:8px 12px;color:var(--muted);text-decoration:none;">Files</a>
+    <a href="#tab-reviews"  style="padding:8px 12px;color:var(--muted);text-decoration:none;">Reviews</a>
+    <a href="#tab-comments" style="padding:8px 12px;color:var(--muted);text-decoration:none;">Comments</a>
+    <a href="#tab-agent"    style="padding:8px 12px;color:var(--muted);text-decoration:none;">tl_towerwatch reviews</a>
+  </nav>
+
+  <section id="tab-overview">
+    <h3>Overview</h3>
+    {% if summary %}
+      <div class="card" style="margin:8px 0;">
+        <strong>LLM summary</strong>
+        <p>{{ summary.summary }}</p>
       </div>
-    {% endfor %}
-  {% endif %}
+    {% endif %}
+    <div class="card" style="margin:8px 0;">
+      <strong>Description</strong>
+      <p style="white-space:pre-wrap;">{{ pr.body or "(sin descripción)" }}</p>
+    </div>
+    <div class="card" style="margin:8px 0;">
+      <strong>Files modified</strong>
+      <p style="color:var(--muted)">detalle por archivo disponible en la pestaña <a href="#tab-files">Files</a> (v1.2).</p>
+    </div>
+    <div class="card" style="margin:8px 0;">
+      <strong>Human reviews</strong>
+      <p style="color:var(--muted)">{{ human_reviews|length }} review(s) humano(s) — ver <a href="#tab-reviews">Reviews</a>.</p>
+    </div>
+  </section>
+
+  <section id="tab-commits" style="margin-top:18px;">
+    <h3>Commits</h3>
+    <div class="card" style="margin:8px 0;">
+      <p>Detalle por commit disponible en v1.2.</p>
+      <p style="color:var(--muted)">HEAD actual: <code>{{ pr.head_sha }}</code></p>
+    </div>
+  </section>
+
+  <section id="tab-files" style="margin-top:18px;">
+    <h3>Files</h3>
+    <div class="card" style="margin:8px 0;">
+      <p>Detalle por archivo (path, <code style="color:#3fb950">+adds</code> / <code style="color:#f78166">-dels</code>) disponible en v1.2.</p>
+    </div>
+  </section>
+
+  <section id="tab-reviews" style="margin-top:18px;">
+    <h3>Reviews</h3>
+    {% if human_reviews %}
+      {% for r in human_reviews %}
+        <div class="card" style="margin:6px 0;">
+          <strong>{{ r.reviewer_login }}</strong>
+          · <span style="color:var(--accent)">{{ r.state }}</span>
+          · <span style="color:var(--muted)">{{ r.submitted_at }}</span>
+          {% if r.body %}<p>{{ r.body }}</p>{% endif %}
+        </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--muted)">Sin reviews humanos todavía.</p>
+    {% endif %}
+  </section>
+
+  <section id="tab-comments" style="margin-top:18px;">
+    <h3>Comments</h3>
+    {% if human_comments %}
+      {% for c in human_comments %}
+        <div class="card" style="margin:6px 0;">
+          <strong>{{ c.reviewer_login }}</strong>
+          {% if c.path %} · <code style="color:var(--muted)">{{ c.path }}</code>{% endif %}
+          · <span style="color:var(--muted)">{{ c.created_at }}</span>
+          <p>{{ c.body }}</p>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--muted)">Sin comentarios humanos todavía.</p>
+    {% endif %}
+  </section>
+
+  <section id="tab-agent" style="margin-top:18px;">
+    <h3>🤖 Historial de reviews del agente</h3>
+    {# Spec §5.2 aggregated counters strip. #}
+    <div style="display:flex;gap:6px;margin-bottom:14px;font-size:11px;">
+      <span style="background:#1f6f3b;color:#7ee787;padding:3px 8px;border-radius:4px;">✓ {{ resolved_count }} resueltos</span>
+      <span style="background:#9e6a03;color:#fff;padding:3px 8px;border-radius:4px;">⚠ {{ pending_count }} pendientes</span>
+      <span style="background:#1f242c;color:#8b949e;padding:3px 8px;border-radius:4px;">🆕 {{ new_count }} nuevos</span>
+    </div>
+
+    {% if runs %}
+      {% for run in runs %}
+        {# Newest run stays expanded (spec §5.2 — "default tab content if
+           requested from a deep link"). Older runs are collapsed but
+           accessible; the brief uses `open` for the newest to mirror
+           the GitHub reviews panel. #}
+        <details {% if loop.first %}open{% endif %} style="margin:6px 0;background:var(--card);padding:8px 10px;border-radius:6px;border:1px solid var(--border);">
+          <summary>
+            <strong>Run #{{ run.id }}</strong> · {{ run.status }} · {{ run.agent_runner }} · {{ run.started_at }}
+            {% if run.error %}<span style="color:#f78166"> · {{ run.error }}</span>{% endif %}
+          </summary>
+          {% if run.findings %}
+            {% for f in run.findings %}
+              <div style="background:var(--card);padding:8px 10px;border-radius:4px;border-left:3px solid {{ f.status | status_color }};margin:4px 0;">
+                <span style="background:#3fb950;color:#fff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;">{{ f.severity }}</span>
+                <code style="color:#79c0ff;font-size:11px;">{{ f.file_path }}:{{ f.line }}</code>
+                <span style="float:right;color:{{ f.status | status_color }};">{{ f.status | status_label }}</span>
+                <div>{{ f.description }}</div>
+                {% if f.resolved_in_commit %}
+                  <div style="color:var(--muted);font-size:10px;margin-top:4px;">resuelto en <code>{{ f.resolved_in_commit[:7] }}</code></div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          {% else %}
+            <p style="color:var(--muted);margin:6px 0 0 0;">Sin findings.</p>
+          {% endif %}
+          {% if run.result_markdown %}
+            <details style="margin-top:6px;">
+              <summary style="color:var(--muted);font-size:11px;">output completo</summary>
+              <pre style="white-space:pre-wrap;font-size:11px;">{{ run.result_markdown }}</pre>
+            </details>
+          {% endif %}
+        </details>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--muted)">Aún no hay runs para este PR.</p>
+    {% endif %}
+  </section>
 {% endif %}
 {% endblock %}

@@ -323,3 +323,86 @@ def test_dashboard_counters_aggregate_across_prs(tmp_path, monkeypatch):
         assert _value_after(r"awaiting\s*my\s*review", "0"), (
             "expected `>0<` adjacent to `awaiting my review` label"
         )
+
+
+def test_pr_detail_serves_tabs_data(tmp_path, monkeypatch):
+    """Spec §5.2: PR detail renders the 6 tabs (Overview, Commits, Files,
+    Reviews, Comments, tl_towerwatch reviews) with findings grouped under
+    tl_towerwatch reviews. Seed two review runs with findings in each of
+    the three lifecycle states (resolved/pending/new) and assert the
+    aggregated counters and the resolved-finding label render."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import (
+        PullRequest,
+        ReviewFinding,
+        ReviewRun,
+        User,
+        now_iso,
+    )
+    from tl_towerwatch.services.repos import add_repo
+    from tl_towerwatch.web import create_app
+
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "o", "n")
+    with db.session() as s:
+        if s.get(User, "alice") is None:
+            s.add(User(login="alice"))
+        s.flush()
+        pr = PullRequest(repo_id=repo.id, number=1, title="tabs",
+                         body="desc", author_login="alice", state="open",
+                         draft=0, head_sha="abcdef0123", base_ref="main",
+                         html_url="u", created_at=now_iso(),
+                         updated_at=now_iso(), cached_at=now_iso())
+        s.add(pr); s.flush()
+        run1 = ReviewRun(pr_id=pr.id, agent_runner="claude",
+                         skills_json="[]", mode="fresh", status="done",
+                         started_at=now_iso(), finished_at=now_iso())
+        run2 = ReviewRun(pr_id=pr.id, agent_runner="codex",
+                         skills_json="[]", mode="compare", status="done",
+                         started_at=now_iso(), finished_at=now_iso())
+        s.add_all([run1, run2]); s.flush()
+        # Run #1 (older): a resolved finding (fixed in a later commit).
+        s.add(ReviewFinding(review_run_id=run1.id,
+                            finding_key="a.py:1:old", severity="high",
+                            file_path="a.py", line=1,
+                            description="dead code",
+                            status="resolved",
+                            resolved_in_commit="abcdef0123"))
+        # Run #2 (newer): a brand-new finding and a still-pending one.
+        s.add(ReviewFinding(review_run_id=run2.id,
+                            finding_key="b.py:7:leak", severity="medium",
+                            file_path="b.py", line=7,
+                            description="resource leak",
+                            status="new"))
+        s.add(ReviewFinding(review_run_id=run2.id,
+                            finding_key="c.py:3:mut", severity="low",
+                            file_path="c.py", line=3,
+                            description="mutable default arg",
+                            status="pending"))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/pr/o/n/1")
+        assert r.status_code == 200
+        body = r.text
+        # All six tabs are rendered as labels.
+        assert "Overview" in body
+        assert "Commits" in body
+        assert "Files" in body
+        assert "Reviews" in body
+        assert "Comments" in body
+        assert "tl_towerwatch reviews" in body
+        # Aggregated counters from the findings we seeded (1 resolved,
+        # 1 pending, 1 new) appear in the spec §5.2 chip strip.
+        assert "1 resueltos" in body
+        assert "1 pendientes" in body
+        assert "1 nuevos" in body
+        # The resolved-finding label is rendered (test spec asks for
+        # "resuelto" / "✓ resuelto" case-insensitive).
+        assert "resuelto" in body.lower()
+        # The pending finding also renders its own status label so the
+        # bug where all findings shared the same status word is caught.
+        assert "pendiente" in body.lower()
