@@ -46,16 +46,41 @@ def index(request: Request):
     db.create_all()
     login = "dimh"  # TODO: derive from auth in Task 18
     prs = list_prs_for_dashboard(db, login=login, scope_filter="mine_and_review")
-    badges_by_pr = {pr.id: compute_badges(db, login, pr) for pr in prs}
+    # Status counters per spec §5.1: seed with the four named counters so they
+    # always render in the strip, then accumulate per-badge counts from
+    # `compute_badges`. Any badge name emitted by compute_badges will be added
+    # to the dict on first occurrence.
+    counts = {"awaiting_my_review": 0, "needs_response": 0,
+              "changes_requested": 0, "ready_to_merge": 0}
+    badges_by_pr: dict[int, list[dict]] = {}
+    for pr in prs:
+        badges = compute_badges(db, login, pr)
+        badges_by_pr[pr.id] = badges
+        for b in badges:
+            counts[b["name"]] = counts.get(b["name"], 0) + 1
     return templates.TemplateResponse(request, "dashboard.html",
         {"nav": "home", "theme": _theme(request),
-         "prs": prs, "badges_by_pr": badges_by_pr, "login": login})
+         "prs": prs, "badges_by_pr": badges_by_pr,
+         "login": login, "counts": counts})
 
 @router.get("/repos", response_class=HTMLResponse)
 def repos_page(request: Request):
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
+    # Cheap rate-limit probe: surfaces in the banner whether the configured
+    # credentials are usable. Any error (no token, network, 401) is swallowed
+    # so the page still renders.
+    rl: dict | None = None
+    try:
+        with GitHubClient(token=resolve_token(settings)) as gh:
+            r = gh._client.get("/rate_limit")
+            if r.status_code == 200:
+                core = r.json().get("resources", {}).get("core", {})
+                rl = {"remaining": core.get("remaining", 0),
+                      "reset": core.get("reset", 0)}
+    except Exception:
+        rl = None
     repo_rows = svc_list_repos(db)
     for r in repo_rows:
         try:
@@ -64,7 +89,8 @@ def repos_page(request: Request):
             authors = []
         r.allowed_authors_csv = ", ".join(authors)
     return templates.TemplateResponse(request, "repos.html",
-        {"nav": "repos", "theme": _theme(request), "repos": repo_rows})
+        {"nav": "repos", "theme": _theme(request),
+         "repos": repo_rows, "rl": rl})
 
 @router.post("/repos/add")
 def repos_add(owner_name: str = Form(...), authors: str = Form("")):

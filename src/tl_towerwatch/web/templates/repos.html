@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Repos</h1>
+{% if rl %}
+<div style="padding:10px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;font-size:12px;">
+  <span style="background:#1f6f3b;color:#7ee787;padding:3px 10px;border-radius:10px;font-weight:600;">● API OK</span>
+  <span>Rate limit: <strong>{{ rl.remaining }}</strong> remaining</span>
+  <span style="color:var(--muted);">· resets {{ rl.reset }}</span>
+</div>
+{% endif %}
 <form method="post" action="/repos/add" class="card" style="margin-bottom:14px;display:flex;gap:8px">
   <input name="owner_name" placeholder="owner/name" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px;border-radius:5px;font-family:monospace">
   <input name="authors" placeholder="autores (opcional, comma-separated)" style="flex:2;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px;border-radius:5px">

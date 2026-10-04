@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from httpx import Response
 from tl_towerwatch.web import create_app
 
 def test_index_renders():
@@ -147,3 +148,86 @@ def test_settings_llm_save_does_not_wipe_auth_fields(tmp_path, monkeypatch):
     assert "TOWERWATCH_GITHUB_TOKEN=ghp_EXISTING" in env_text
     assert "TOWERWATCH_LLM_PROVIDER=anthropic" in env_text
     assert "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-FAKE" in env_text
+
+
+def test_dashboard_renders_status_counters(tmp_path, monkeypatch):
+    """Seed DB with PRs in different states; assert the counters strip renders
+    the spec §5.1 names with non-zero counts for the seeded badges."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Review, User, now_iso
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = add_repo(db, "o", "n")
+    with db.session() as s:
+        for login in ("dimh", "alice", "bob"):
+            if s.get(User, login) is None:
+                s.add(User(login=login))
+        s.flush()
+        # PR 1: alice opened, dimh reviewed with CHANGES_REQUESTED.
+        # PR 2: bob opened, dimh reviewed with APPROVED.
+        # Both are visible under the "mine_and_review" dashboard scope
+        # because dimh has a Review row for each.
+        pr1 = PullRequest(repo_id=repo.id, number=1, title="cr", body=None,
+                          author_login="alice", state="open",
+                          draft=0, head_sha="a", base_ref="main",
+                          html_url="u",
+                          created_at=now_iso(), updated_at=now_iso(),
+                          cached_at=now_iso())
+        pr2 = PullRequest(repo_id=repo.id, number=2, title="lgtm", body=None,
+                          author_login="bob", state="open",
+                          draft=0, head_sha="b", base_ref="main",
+                          html_url="u",
+                          created_at=now_iso(), updated_at=now_iso(),
+                          cached_at=now_iso())
+        s.add_all([pr1, pr2])
+        s.flush()
+        s.add(Review(pr_id=pr1.id, reviewer_login="dimh",
+                     state="changes_requested",
+                     submitted_at=now_iso(), body="needs more work"))
+        s.add(Review(pr_id=pr2.id, reviewer_login="dimh",
+                     state="approved",
+                     submitted_at=now_iso(), body="lgtm"))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/")
+        assert r.status_code == 200
+        # The counters strip renders the badge names with underscores replaced
+        # by spaces and a numeric value below each label.
+        body = r.text
+        assert "changes requested" in body.lower()
+        assert "approved" in body.lower()
+        # The spec §5.1 named counters should all be present (rendered as 0
+        # when there are no matching PRs).
+        assert "awaiting my review" in body.lower()
+        assert "needs response" in body.lower()
+        assert "ready to merge" in body.lower()
+
+
+def test_repos_route_shows_rate_limit_banner(tmp_path, monkeypatch, respx_mock):
+    """Mock /rate_limit and confirm the banner renders 'Rate limit' with the
+    remaining count from the response."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    # resolve_token -> _validate_pat hits /user; let that succeed too so the
+    # rate-limit probe inside repos_page is reached.
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"})
+    )
+    respx_mock.get("https://api.github.com/rate_limit").mock(
+        return_value=Response(200, json={
+            "resources": {"core": {"remaining": 4500, "reset": 1700000000}}
+        })
+    )
+    from tl_towerwatch.config import load_settings
+    load_settings(tmp_path)
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/repos")
+        assert r.status_code == 200
+        assert "Rate limit" in r.text
+        assert "4500" in r.text
