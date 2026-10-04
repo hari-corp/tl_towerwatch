@@ -3,10 +3,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tl_towerwatch.config import Settings, load_settings
 from tl_towerwatch.db.database import Database
 from tl_towerwatch.db.models import (
-    PRSummary,
     PullRequest,
     Repo,
     Review,
@@ -15,7 +13,6 @@ from tl_towerwatch.db.models import (
     now_iso,
 )
 from tl_towerwatch.github.client import GitHubClient
-from tl_towerwatch.llm.base import LLMProvider
 from tl_towerwatch.services.repos import normalize_authors
 
 
@@ -56,8 +53,9 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
             "title", "body", "author_login", "state", "draft",
             "head_sha", "base_ref", "html_url", "created_at", "updated_at",
             "additions", "deletions", "changed_files", "commits_count",
+            "manual_description", "manual_notes",
         ):
-            setattr(existing, f, getattr(pr, f))
+            setattr(existing, f, getattr(pr, f, getattr(existing, f, None)))
         existing.cached_at = now_iso()
         return existing
     new = PullRequest(
@@ -78,6 +76,8 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
         deletions=pr.deletions,
         changed_files=pr.changed_files,
         commits_count=pr.commits_count,
+        manual_description=getattr(pr, "manual_description", None),
+        manual_notes=getattr(pr, "manual_notes", None),
     )
     s.add(new)
     s.flush()
@@ -123,86 +123,20 @@ def _replace_reviews_and_comments(
         )
 
 
-def _summarize_diff(files, *, max_files: int, max_lines: int) -> str:
-    """Concatenate file patches, truncating to ``max_files`` files and
-    ``max_lines`` lines so the LLM sees the salient diff without exceeding
-    its context window. Replaces the old char-based `[:20000]` cap that could
-    still send tens of thousands of lines when a single file was huge
-    (v1.1 / Task 12).
+def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
+    """Sync every open PR for ``repo`` from GitHub into the local cache.
+
+    v1.3.0: dropped the ``llm`` parameter — tl_towerwatch no longer runs
+    an agent. The sync only persists PR metadata, review state, and
+    comments. The user generates summaries by hand via the manual
+    description / notes fields on each PR card or the PR detail page.
     """
-    diff_parts = [f.patch for f in files[:max_files] if f.patch]
-    diff_text = "\n".join(diff_parts)
-    lines = diff_text.splitlines()
-    if len(lines) > max_lines:
-        diff_text = "\n".join(lines[:max_lines])
-        diff_text += f"\n... [truncated to {max_lines} lines of {len(lines)} total]\n"
-    return diff_text
-
-
-def _maybe_summarize(
-    s: Session,
-    row: PullRequest,
-    *,
-    llm: LLMProvider | None,
-    diff_text: str,
-    repo_label: str,
-) -> None:
-    """Generate / refresh a PRSummary when `llm` is provided and the head SHA
-    changed (or no summary exists yet).
-    """
-    if llm is None:
-        return
-    existing_summary = s.get(PRSummary, row.id)
-    if existing_summary is not None and existing_summary.head_sha == row.head_sha:
-        return
-    text = llm.summarize(
-        title=row.title,
-        body=row.body or "",
-        diff=diff_text,
-        metadata={"number": row.number, "repo": repo_label},
-    )
-    if existing_summary is None:
-        s.add(
-            PRSummary(
-                pr_id=row.id,
-                summary=text,
-                head_sha=row.head_sha,
-                model=llm.name,
-                generated_at=now_iso(),
-            )
-        )
-    else:
-        existing_summary.summary = text
-        existing_summary.head_sha = row.head_sha
-        existing_summary.model = llm.name
-        existing_summary.generated_at = now_iso()
-
-
-def sync_repo(
-    db: Database, gh: GitHubClient, repo: Repo, *,
-    llm: LLMProvider | None = None,
-    settings: Settings | None = None,
-) -> int:
     count = 0
-    repo_label = f"{repo.owner}/{repo.name}"
-    if settings is None:
-        settings = load_settings()
     with db.session() as s:
         for pr in gh.list_open_prs(repo.owner, repo.name):
             row = _upsert_pr(s, repo.id, pr)
             s.flush()
             _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, pr.number)
-            if llm is not None:
-                files = gh.list_pr_files(repo.owner, repo.name, pr.number)
-                _maybe_summarize(
-                    s, row, llm=llm,
-                    diff_text=_summarize_diff(
-                        files,
-                        max_files=settings.max_diff_files,
-                        max_lines=settings.max_diff_lines,
-                    ),
-                    repo_label=repo_label,
-                )
             count += 1
         # Re-fetch the repo row in the current session before mutating: callers
         # typically pass a Repo loaded by an earlier `list_repos(db)` call, so
@@ -220,28 +154,53 @@ def sync_one_pr(
     gh: GitHubClient,
     repo: Repo,
     number: int,
-    *,
-    llm: LLMProvider | None = None,
-    settings: Settings | None = None,
 ) -> PullRequest:
-    diff_text = ""
-    if llm is not None:
-        if settings is None:
-            settings = load_settings()
-        diff_text = _summarize_diff(
-            gh.list_pr_files(repo.owner, repo.name, number),
-            max_files=settings.max_diff_files,
-            max_lines=settings.max_diff_lines,
-        )
+    """Refresh a single PR's metadata + reviews + comments.
+
+    v1.3.0: dropped the ``llm`` parameter. Summaries are now author-only
+    via the ``manual_description`` column on PullRequest.
+    """
     with db.session() as s:
         pr = gh.get_pr(repo.owner, repo.name, number)
         row = _upsert_pr(s, repo.id, pr)
         _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, number)
-        _maybe_summarize(
-            s, row, llm=llm,
-            diff_text=diff_text,
-            repo_label=f"{repo.owner}/{repo.name}",
-        )
+        return row
+
+
+def save_manual_description(
+    db: Database, repo: Repo, number: int, text: str
+) -> PullRequest:
+    """Persist the author's manual description for a PR.
+
+    Manual description replaces the AI summary that used to live on
+    PRSummary — the user writes their own TL;DR for reviewers. Empty
+    text clears the field.
+    """
+    with db.session() as s:
+        row = s.execute(
+            select(PullRequest).where(
+                PullRequest.repo_id == repo.id, PullRequest.number == number
+            )
+        ).scalar_one()
+        row.manual_description = text or None
+        return row
+
+
+def save_manual_notes(
+    db: Database, repo: Repo, number: int, text: str
+) -> PullRequest:
+    """Persist the author's internal notes for a PR.
+
+    Manual notes are author-only context (release notes, things-to-
+    remember) that doesn't belong in the public PR description.
+    """
+    with db.session() as s:
+        row = s.execute(
+            select(PullRequest).where(
+                PullRequest.repo_id == repo.id, PullRequest.number == number
+            )
+        ).scalar_one()
+        row.manual_notes = text or None
         return row
 
 

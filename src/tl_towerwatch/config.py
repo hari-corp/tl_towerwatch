@@ -8,32 +8,23 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class AnthropicCfg(BaseModel):
-    api_key: str = ""
-    model: str = "claude-3-5-sonnet-latest"
-
-class OpenAICfg(BaseModel):
-    api_key: str = ""
-    model: str = "gpt-4o"
-
-class OllamaCfg(BaseModel):
-    base_url: str = "http://localhost:11434"
-    model: str = "llama3.2"
-
-class LLMCfg(BaseModel):
-    default_provider: Literal["anthropic", "openai", "ollama"] = "anthropic"
-    anthropic: AnthropicCfg = Field(default_factory=AnthropicCfg)
-    openai: OpenAICfg = Field(default_factory=OpenAICfg)
-    ollama: OllamaCfg = Field(default_factory=OllamaCfg)
-
 class AuthCfg(BaseModel):
     mode: Literal["pat", "oauth"] = "pat"
+
 
 class Settings(BaseSettings):
     # env_file is intentionally omitted: .env must be loaded relative to the
     # configured data_dir (see load_settings), not the current working
     # directory. Without this override, pydantic-settings silently swallows
     # the user's bind-mounted /data/.env in Docker (CWD is /app).
+    #
+    # extra="ignore" is critical: pre-v1.3.0 installs wrote
+    # TOWERWATCH_ANTHROPIC_API_KEY / TOWERWATCH_LLM_PROVIDER etc. to
+    # .env. After the v1.3.0 cut we no longer expose those fields here
+    # (LLM is fully removed from the app) but old .env files still
+    # carry them. The ignore policy means pydantic-settings drops them
+    # silently — the user can clean their .env at their own pace and
+    # the Settings model never 500s on startup.
     model_config = SettingsConfigDict(
         env_prefix="TOWERWATCH_",
         env_file_encoding="utf-8",
@@ -47,10 +38,6 @@ class Settings(BaseSettings):
     github_oauth_access_token: str = ""
     github_oauth_refresh_token: str = ""
     host_alias: str = "localhost"
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-3-5-sonnet-latest"
-    openai_api_key: str = ""
-    ollama_base_url: str = "http://localhost:11434"
     theme: Literal["dark", "light", "system"] = "dark"
     refresh_interval_seconds: int = 300
     # v1.1 (Task 12): cap the diff handed to the LLM for PR summarisation so
@@ -60,34 +47,17 @@ class Settings(BaseSettings):
     max_diff_lines: int = 2000
     max_diff_files: int = 30
 
-    llm: LLMCfg = Field(default_factory=LLMCfg)
     auth: AuthCfg = Field(default_factory=AuthCfg)
 
     @model_validator(mode="after")
-    def _mirror_llm_keys(self) -> Settings:
-        """Mirror flat ``anthropic_api_key``/``openai_api_key``/``ollama_base_url``
-        into the nested ``llm.anthropic/openai/ollama`` cfg that they actually
-        drive (C1 fix). Without this mirroring, the LLM providers are always
-        constructed with empty credentials even though the flat fields are
-        populated from env or the Settings UI."""
-        if self.anthropic_api_key and not self.llm.anthropic.api_key:
-            self.llm.anthropic.api_key = self.anthropic_api_key
-        if self.openai_api_key and not self.llm.openai.api_key:
-            self.llm.openai.api_key = self.openai_api_key
-        # Only mirror ollama if the user changed it from the bundled default.
-        if (
-            self.ollama_base_url
-            and self.ollama_base_url != "http://localhost:11434"
-            and not self.llm.ollama.base_url
-        ):
-            self.llm.ollama.base_url = self.ollama_base_url
-        # Mirror the Anthropic model name. The Settings UI persists it
-        # to ``TOWERWATCH_ANTHROPIC_MODEL`` (a flat env var pydantic-
-        # settings auto-binds to ``Settings.anthropic_model``) and the
-        # /settings template reads ``llm.anthropic.model`` — so we copy
-        # the value across on construction.
-        if self.anthropic_model and self.anthropic_model != self.llm.anthropic.model:
-            self.llm.anthropic.model = self.anthropic_model
+    def _noop(self) -> Settings:
+        # Pre-v1.3.0 had a ``_mirror_llm_keys`` validator that copied flat
+        # API-key fields into a nested LLMCfg. With the LLM stack removed
+        # the validator isn't needed, but we keep a no-op stub so the
+        # ``Settings`` model has at least one ``@model_validator`` and the
+        # pydantic-settings machinery stays warm. Removing the decorator
+        # entirely would force all callers to refresh their pre-built
+        # ``Settings`` instances, which is unneeded churn.
         return self
 
     @property
@@ -118,14 +88,13 @@ def _load_env_file_into_environ(env_file: Path) -> None:
 def load_settings(data_dir: Path | None = None) -> Settings:
     # Honour the TOWERWATCH_DATA_DIR env var so web routes and the CLI
     # share the same data dir even when load_settings() is called with
-    # no explicit argument. Otherwise default to ./data relative to CWD —
-    # this matches the wizard's write target (init writes to ./data/.env),
-    # so a fresh `tl_towerwatch init` followed by `tl_towerwatch repo add`
-    # from the same directory works without requiring the user to set
-    # TOWERWATCH_DATA_DIR.
+    # no explicit argument.
     if data_dir is None:
         env_data_dir = os.environ.get("TOWERWATCH_DATA_DIR")
         data_dir = Path(env_data_dir) if env_data_dir else Path("./data")
+    # Always resolve to an absolute path so the env-file load below
+    # doesn't depend on the caller's CWD after the function returns.
+    data_dir = data_dir.resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "config.yaml").touch()
     # Materialize env vars from <data_dir>/.env into os.environ so that

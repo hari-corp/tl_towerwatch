@@ -23,7 +23,7 @@ from tl_towerwatch.services.repos import (
     set_allowed_authors,
     set_repo_enabled,
 )
-from tl_towerwatch.services.review_runner import run_review
+
 
 app = typer.Typer(help="tl_towerwatch — local PR dashboard for tech leads")
 repo_app = typer.Typer(help="Manage watched repos")
@@ -44,6 +44,10 @@ def _env_lines_for(s):
     ``load_settings(data_dir)`` (v1.0 fix C2) sees them on next start.
     Only writes keys that have a non-empty value, matching the
     pre-existing behaviour of the stub init.
+
+    v1.3.0: the LLM block was dropped — tl_towerwatch no longer manages
+    Anthropic/OpenAI/Ollama credentials. The auth-mode entry is the only
+    non-empty token-related value we still carry.
     """
     lines = []
     if s.github_token:
@@ -52,16 +56,17 @@ def _env_lines_for(s):
         lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_ID={s.github_oauth_client_id}")
     if s.github_oauth_client_secret:
         lines.append(f"TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET={s.github_oauth_client_secret}")
-    if s.llm.anthropic.api_key:
-        lines.append(f"TOWERWATCH_ANTHROPIC_API_KEY={s.llm.anthropic.api_key}")
-    if s.llm.openai.api_key:
-        lines.append(f"TOWERWATCH_OPENAI_API_KEY={s.llm.openai.api_key}")
     return "\n".join(lines) + "\n"
 
 
 @app.command()
 def init():
-    """First-time setup wizard."""
+    """First-time setup wizard.
+
+    v1.3.0: dropped the LLM provider + model prompts — tl_towerwatch no
+    longer manages direct LLM credentials. The wizard now only collects
+    GitHub auth + initialises the per-skill prompt registry.
+    """
     import click
 
     settings = load_settings()
@@ -90,33 +95,30 @@ def init():
             "Run `tl_towerwatch auth login` to complete the browser flow."
         )
 
-    provider = typer.prompt(
-        "Default LLM provider",
-        type=click.Choice(["anthropic", "openai", "ollama"]),
-        default="anthropic",
-    )
-    default_model = {
-        "anthropic": "claude-3-5-sonnet-latest",
-        "openai": "gpt-4o",
-        "ollama": "llama3.2",
-    }[provider]
-    model = typer.prompt(f"{provider} model", default=default_model)
-
     save_config_yaml(
         settings.data_dir / "config.yaml",
         {
             "auth": {"mode": mode},
-            "llm": {"default_provider": provider, provider: {"model": model}},
             "skills": {
                 "superpowers": {
                     "enabled": True,
                     "cli_flag": "--enable-superpowers",
                     "description": "Code-review and quality skills",
+                    "prompts": {
+                        "review": "",
+                        "post_review": "",
+                        "check_resolved": "",
+                    },
                 },
                 "ponytail": {
                     "enabled": True,
                     "cli_flag": "--skill ponytail",
                     "description": "Custom review heuristics",
+                    "prompts": {
+                        "review": "",
+                        "post_review": "",
+                        "check_resolved": "",
+                    },
                 },
             },
         },
@@ -254,11 +256,14 @@ def status():
 
 @app.command("config")
 def status_config():
-    """Print current effective settings (no secrets)."""
+    """Print current effective settings (no secrets).
+
+    v1.3.0: dropped the ``llm.default_provider`` line — there's no LLM
+    block to surface anymore.
+    """
     s = load_settings()
     safe = {
         "auth.mode": s.auth.mode,
-        "llm.default_provider": s.llm.default_provider,
         "theme": s.theme,
         "refresh_interval_seconds": s.refresh_interval_seconds,
     }
@@ -322,12 +327,19 @@ def serve(host: str = typer.Option("127.0.0.1"),
 @app.command()
 def review(
     target: str = typer.Argument(..., help="owner/name#N (e.g. 'hari-corp/billing-svc#482')"),
-    skills: str = typer.Option("", "--skills", help="comma-separated skill names"),
-    agent: str = typer.Option("claude", "--agent", help="agent runner (claude|codex|minimax|ollama)"),
-    mode: str = typer.Option("fresh", "--mode", help="fresh|compare"),
-    watch: bool = typer.Option(False, "--watch", help="stream output to terminal (v1.1)"),
+    slot: str = typer.Option("review", "--slot", help="which prompt slot to render: review | post_review | check_resolved"),
+    mode: str = typer.Option("fresh", "--mode", help="fresh|compare (only relevant for the review slot)"),
 ):
-    """Run a code review on a PR headlessly (spec §9)."""
+    """Print the assembled prompt for a single PR to stdout.
+
+    v1.3.0: tl_towerwatch no longer runs an agent directly. This command
+    assembles the prompt body the user would otherwise feed to an
+    external LLM (Claude Code, ChatGPT, etc.) by combining the enabled
+    skills' ``slot`` prompt template with the live PR metadata + diff
+    fetched from GitHub. The user copies the output, pastes it into
+    their LLM of choice, and interprets the result themselves.
+    """
+    from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
     if "#" not in target:
         typer.echo("target must be owner/name#N (e.g. 'hari-corp/billing-svc#482')", err=True)
         raise typer.Exit(1)
@@ -336,52 +348,14 @@ def review(
         typer.echo("target must be owner/name#N", err=True)
         raise typer.Exit(1)
     owner, _, name = owner_name.partition("/")
-    skill_names = [s.strip() for s in skills.split(",") if s.strip()]
     settings = load_settings()
     from tl_towerwatch.auth.github import resolve_token
     from tl_towerwatch.github.client import GitHubClient
-
-    if watch:
-        # v1.1 (Task 6): stream agent events to the terminal as they happen.
-        # Deliberately bypasses services.review_runner.run_review (no DB
-        # persistence, no ReviewRun row) — streaming callers want live
-        # output, not a persisted run record. Skills/registry is loaded
-        # straight from settings.data_dir (same source as the service).
-        from tl_towerwatch.agents import get_runner
-        from tl_towerwatch.skills.registry import load_registry
-        with GitHubClient(token=resolve_token(settings)) as gh:
-            pr = gh.get_pr(owner, name, int(number))
-            files = gh.list_pr_files(owner, name, int(number))[:30]
-            pr_diff = "\n".join((f.patch or "") for f in files)[:20000]
-            sk = load_registry(settings.data_dir)
-            runner = get_runner(agent, settings)
-            def on_event(e):
-                typer.echo(f"[{e.kind}] {e.data[:200]}")
-            runner.run_review(
-                pr_diff=pr_diff,
-                pr_metadata={
-                    "title": pr.title,
-                    "body": pr.body,
-                    "author": pr.author_login,
-                    "number": pr.number,
-                    "repo": f"{owner}/{name}",
-                    "head_sha": pr.head_sha,
-                },
-                skills=sk,
-                prompt_template=None,
-                mode=mode,
-                previous_findings=[],
-                timeout_seconds=300,
-                on_event=on_event,
-            )
-    else:
-        db = _db()
-        db.create_all()
-        with GitHubClient(token=resolve_token(settings)) as gh:
-            run_review(
-                db, gh,
-                owner=owner, name=name, number=int(number),
-                agent_name=agent, skill_names=skill_names, mode=mode,
-                timeout_seconds=300, settings=settings,
-            )
-        typer.echo(f"✓ Review submitted for {owner}/{name}#{number}")
+    with GitHubClient(token=resolve_token(settings)) as gh:
+        prompt_text = assemble_review_prompt(
+            gh,
+            data_dir=settings.data_dir,
+            owner=owner, name=name, number=int(number),
+            slot=slot, mode=mode,
+        )
+    typer.echo(prompt_text)

@@ -10,10 +10,11 @@ from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.db.models import ReviewFinding, ReviewRun
 from tl_towerwatch.github.client import GitHubClient
-from tl_towerwatch.llm.base import LLMProvider
 from tl_towerwatch.services.pull_requests import (
     get_pr_with_details,
     list_prs_for_dashboard,
+    save_manual_description,
+    save_manual_notes,
     sync_one_pr,
     sync_repo,
 )
@@ -26,7 +27,6 @@ from tl_towerwatch.services.repos import (
     remove_allowed_author,
     set_allowed_authors,
 )
-from tl_towerwatch.services.review_runner import run_review
 from tl_towerwatch.services.reviews import compute_badges
 
 
@@ -293,122 +293,30 @@ def test_badge_changes_requested(tmp_path):
     assert "pending_response" in names
 
 
-class FakeLLM(LLMProvider):
-    name = "fake"
-    def __init__(self):
-        self.calls = 0
-    def summarize(self, *, title, body, diff, metadata) -> str:
-        self.calls += 1
-        return f"SUMMARY({title})"
-    def health_check(self) -> bool: return True
-
 
 @respx.mock
-def test_sync_regenerates_summary_on_head_change(tmp_path):
-    db = _setup(tmp_path)
-    add_repo(db, "o", "n")
+def test_assemble_review_prompt_truncates_huge_diff(tmp_path, monkeypatch):
+    """v1.3.0: ``assemble_review_prompt`` must cap the diff block at
+    ``max_lines=2000`` so a 5000-file / 5M-line PR doesn't blow the
+    user's external LLM's context window. Same regression test as v1.1's
+    sync_one_pr truncation — just relocated to the new code path."""
+    from tl_towerwatch.config_io import save_config_yaml
+    from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
+    cfg = tmp_path / "config.yaml"
+    save_config_yaml(cfg, {"skills": {"superpowers": {
+        "enabled": True, "cli_flag": "--x", "description": "d",
+        "prompts": {"review": "{title} | {diff}",
+                    "post_review": "{findings}",
+                    "check_resolved": "{findings}"}}}})
     respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
-        200, json={"number":1, "title":"t","body":"b","user":{"login":"a"},
-                  "state":"open","draft":False,"head":{"sha":"s1"},"base":{"ref":"main"},
-                  "html_url":"u","created_at":"2026-01-01T00:00:00Z",
-                  "updated_at":"2026-01-01T00:00:00Z","requested_reviewers":[]}))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
-    repo = list_repos(db)[0]
-    llm = FakeLLM()
-    with GitHubClient(token="x") as gh:
-        sync_one_pr(db, gh, repo, 1, llm=llm)
-        sync_one_pr(db, gh, repo, 1, llm=llm)
-    assert llm.calls == 1
-
-
-@respx.mock
-def test_run_review_end_to_end(tmp_path, monkeypatch, fake_claude):
-    monkeypatch.setenv("PATH", f"{fake_claude.parent}:{os.environ['PATH']}")
-    db = _setup(tmp_path)
-    add_repo(db, "o", "n")
-    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
-        200, json={"number":1,"title":"t","body":"b","user":{"login":"a"},"state":"open",
-                   "draft":False,"head":{"sha":"s1"},"base":{"ref":"main"},
-                   "html_url":"u","created_at":"2026-01-01T00:00:00Z",
-                   "updated_at":"2026-01-01T00:00:00Z","requested_reviewers":[]}))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[
-        {"filename":"a.py","additions":1,"deletions":0,"status":"added","patch":"+ x\n"}]))
-    settings = load_settings(tmp_path)
-    with GitHubClient(token="x") as gh:
-        run_review(db, gh, owner="o", name="n", number=1,
-                   agent_name="claude", skill_names=["superpowers"],
-                   mode="fresh", timeout_seconds=10, settings=settings)
-    with db.session() as s:
-        run_row = s.query(ReviewRun).order_by(ReviewRun.id.desc()).first()
-        assert run_row.status == "done"
-        assert s.query(ReviewFinding).filter_by(review_run_id=run_row.id).count() == 1
-
-
-@respx.mock
-def test_run_review_marks_failed_when_runner_raises(tmp_path, monkeypatch):
-    """Regression: spec §9 requires every ReviewRun to reach a terminal state.
-    If the agent call (or its supporting GitHub fetch) raises, the row must be
-    flipped to status="failed" with the exception captured in `error` and
-    `finished_at` set, and the exception must still propagate to the caller.
-    """
-    db = _setup(tmp_path)
-    add_repo(db, "o", "n")
-    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
-        200, json={"number":1,"title":"t","body":"b","user":{"login":"a"},"state":"open",
-                   "draft":False,"head":{"sha":"s1"},"base":{"ref":"main"},
-                   "html_url":"u","created_at":"2026-01-01T00:00:00Z",
-                   "updated_at":"2026-01-01T00:00:00Z","requested_reviewers":[]}))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[
-        {"filename":"a.py","additions":1,"deletions":0,"status":"added","patch":"+ x\n"}]))
-
-    class _BoomRunner:
-        name = "boom"
-        def run_review(self, **_kwargs):
-            raise RuntimeError("boom")
-
-    monkeypatch.setattr(
-        "tl_towerwatch.services.review_runner.get_runner",
-        lambda _name, _settings: _BoomRunner(),
-    )
-
-    settings = load_settings(tmp_path)
-    with GitHubClient(token="x") as gh, pytest.raises(RuntimeError, match="boom"):
-        run_review(db, gh, owner="o", name="n", number=1,
-                   agent_name="claude", skill_names=["superpowers"],
-                   mode="fresh", timeout_seconds=10, settings=settings)
-
-    with db.session() as s:
-        run_row = s.query(ReviewRun).order_by(ReviewRun.id.desc()).first()
-        assert run_row.status == "failed"
-        assert "boom" in run_row.error
-
-
-@respx.mock
-def test_sync_one_pr_truncates_huge_diff(tmp_path):
-    """v1.1: `sync_one_pr` must cap the diff the LLM sees at
-    ``Settings.max_diff_files`` files and ``Settings.max_diff_lines`` lines so
-    a 5000-file / 5M-line PR doesn't blow the LLM's context window. The old
-    char-based `[:20000]` truncation could still hand the model tens of
-    thousands of lines on a single huge file.
-    """
-    db = _setup(tmp_path)
-    add_repo(db, "o", "n")
-    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
-        200, json={"number": 1, "title": "t", "body": "b", "user": {"login": "a"},
-                   "state": "open", "draft": False, "head": {"sha": "s1"},
-                   "base": {"ref": "main"}, "html_url": "u",
+        200, json={"number": 1, "title": "big pr", "body": "b",
+                   "user": {"login": "a"}, "state": "open", "draft": False,
+                   "head": {"sha": "s1"}, "base": {"ref": "main"},
+                   "html_url": "u",
                    "created_at": "2026-01-01T00:00:00Z",
-                   "updated_at": "2026-01-01T00:00:00Z", "requested_reviewers": []}))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
-    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
-    # 5000 files × 1000 lines each — far above both Settings.max_diff_files=30
-    # and Settings.max_diff_lines=2000.
+                   "updated_at": "2026-01-01T00:00:00Z",
+                   "requested_reviewers": []}))
+    # 5000 files × 1000 lines each.
     huge_files = [
         {"filename": f"f{i}.py", "additions": 1, "deletions": 0,
          "status": "modified", "patch": "x\n" * 1000}
@@ -416,22 +324,112 @@ def test_sync_one_pr_truncates_huge_diff(tmp_path):
     ]
     respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(
         return_value=Response(200, json=huge_files))
-    repo = list_repos(db)[0]
-
-    class _RecordingLLM(LLMProvider):
-        name = "rec"
-        def __init__(self):
-            self.last_diff = ""
-        def summarize(self, *, title, body, diff, metadata):
-            self.last_diff = diff
-            return "ok"
-        def health_check(self) -> bool:
-            return True
-
-    llm = _RecordingLLM()
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
     with GitHubClient(token="x") as gh:
-        sync_one_pr(db, gh, repo, 1, llm=llm)
-    # LLM must not receive the full ~30k-line diff.
-    assert llm.last_diff.count("\n") < 3000
-    # Truncation marker is appended so the model knows it saw a slice.
-    assert "[truncated" in llm.last_diff
+        out = assemble_review_prompt(
+            gh, data_dir=tmp_path, owner="o", name="n", number=1,
+            slot="review", mode="fresh",
+        )
+    # The diff portion stays under the 2000-line cap.
+    assert out.count("\n") < 2500
+    assert "truncated" in out
+    assert "big pr" in out
+
+
+@respx.mock
+def test_assemble_review_prompt_uses_first_enabled_skill(tmp_path, monkeypatch):
+    """v1.3.0: when multiple skills are enabled, ``assemble_review_prompt``
+    picks the first one's slot template — deterministic for the CLI/web
+    parity invariant."""
+    from tl_towerwatch.config_io import save_config_yaml
+    from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
+    cfg = tmp_path / "config.yaml"
+    save_config_yaml(cfg, {"skills": {
+        "first":  {"enabled": True, "cli_flag": "--f", "description": "",
+                   "prompts": {"review": "FIRST({title})", "post_review": "",
+                              "check_resolved": ""}},
+        "second": {"enabled": True, "cli_flag": "--s", "description": "",
+                   "prompts": {"review": "SECOND({title})", "post_review": "",
+                              "check_resolved": ""}},
+    }})
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number": 1, "title": "feat", "body": "",
+                   "user": {"login": "a"}, "state": "open", "draft": False,
+                   "head": {"sha": "s1"}, "base": {"ref": "main"},
+                   "html_url": "u",
+                   "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z",
+                   "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(
+        return_value=Response(200, json=[]))
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    with GitHubClient(token="x") as gh:
+        out = assemble_review_prompt(
+            gh, data_dir=tmp_path, owner="o", name="n", number=1,
+            slot="review", mode="fresh",
+        )
+    assert "FIRST(feat)" in out
+    assert "SECOND" not in out
+
+
+@respx.mock
+def test_save_manual_description_persists(tmp_path):
+    from tl_towerwatch.db.models import PullRequest
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    repo = list_repos(db)[0]
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number": 1, "title": "t", "body": "b",
+                   "user": {"login": "a"}, "state": "open", "draft": False,
+                   "head": {"sha": "s1"}, "base": {"ref": "main"},
+                   "html_url": "u",
+                   "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z",
+                   "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
+        return_value=Response(200, json=[]))
+    with GitHubClient(token="x") as gh:
+        sync_one_pr(db, gh, repo, 1)
+    save_manual_description(db, repo, 1, "TL;DR for reviewers")
+    with db.session() as s:
+        pr = s.execute(__import__("sqlalchemy").select(PullRequest).where(
+            PullRequest.repo_id == repo.id, PullRequest.number == 1
+        )).scalar_one()
+        assert pr.manual_description == "TL;DR for reviewers"
+    # Empty save clears the field.
+    save_manual_description(db, repo, 1, "")
+    with db.session() as s:
+        pr = s.execute(__import__("sqlalchemy").select(PullRequest).where(
+            PullRequest.repo_id == repo.id, PullRequest.number == 1
+        )).scalar_one()
+        assert pr.manual_description is None
+
+
+@respx.mock
+def test_save_manual_notes_persists(tmp_path):
+    from tl_towerwatch.db.models import PullRequest
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    repo = list_repos(db)[0]
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number": 1, "title": "t", "body": "b",
+                   "user": {"login": "a"}, "state": "open", "draft": False,
+                   "head": {"sha": "s1"}, "base": {"ref": "main"},
+                   "html_url": "u",
+                   "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z",
+                   "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
+        return_value=Response(200, json=[]))
+    with GitHubClient(token="x") as gh:
+        sync_one_pr(db, gh, repo, 1)
+    save_manual_notes(db, repo, 1, "release notes")
+    with db.session() as s:
+        pr = s.execute(__import__("sqlalchemy").select(PullRequest).where(
+            PullRequest.repo_id == repo.id, PullRequest.number == 1
+        )).scalar_one()
+        assert pr.manual_notes == "release notes"

@@ -59,6 +59,11 @@ class PullRequest(Base):
     deletions = Column(Integer, nullable=False, default=0)
     changed_files = Column(Integer, nullable=False, default=0)
     commits_count = Column(Integer, nullable=False, default=0)
+    # User-authored content. Both fields are free-form text; ``manual_description``
+    # is a TL;DR the author writes for reviewers (replaces the old AI summary),
+    # ``manual_notes`` is internal context (release notes, things-to-remember).
+    manual_description = Column(Text)
+    manual_notes = Column(Text)
     __table_args__ = (
         Index("uq_pr_repo_number", "repo_id", "number", unique=True),
         Index("idx_pr_repo", "repo_id"),

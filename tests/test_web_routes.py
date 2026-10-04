@@ -246,165 +246,6 @@ def test_settings_auth_save_does_not_wipe_oauth_fields(tmp_path, monkeypatch):
     assert "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET=csec_real" in env_text
     assert "TOWERWATCH_GITHUB_TOKEN=ghp_new" in env_text
 
-def test_settings_llm_save_does_not_wipe_auth_fields(tmp_path, monkeypatch):
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    from tl_towerwatch.config import load_settings
-    load_settings(tmp_path)
-    env_path = tmp_path / ".env"
-    env_path.write_text("TOWERWATCH_GITHUB_TOKEN=ghp_EXISTING\n")
-    from tl_towerwatch.web import create_app
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.post("/settings/llm/save",
-                   data={"provider": "anthropic",
-                         "anthropic_api_key": "sk-ant-FAKE",
-                         "openai_api_key": "",
-                         "ollama_base_url": ""},
-                   follow_redirects=False)
-        assert r.status_code == 303
-    env_text = env_path.read_text()
-    assert "TOWERWATCH_GITHUB_TOKEN=ghp_EXISTING" in env_text
-    assert "TOWERWATCH_LLM_PROVIDER=anthropic" in env_text
-    assert "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-FAKE" in env_text
-
-
-# ---------------------------------------------------------------------------
-# v1.1 Task 19 — Settings page rebuilt against the v3 mock
-# (`.superpowers/brainstorm/88238-1790999216/content/settings.html`)
-# ---------------------------------------------------------------------------
-
-def test_settings_matches_mock_layout(tmp_path, monkeypatch):
-    """Task 19: the v3 mock rebuild of `/settings` must render every block
-    the mock defines — settings tabs (active = Auth & LLMs), the GitHub
-    Auth card (with user card + PAT chip masking + OAuth collapsed hint),
-    the LLM/Agent card (provider selector with 4 options, default selected,
-    Anthropic expanded config, other-provider collapsed summaries), the
-    Skills registry preview seeded from config.yaml, and the bottom save
-    bar. Asserts both structural content and the dynamic bits (avatar URL,
-    PAT last-4 mask, provider selection).
-    """
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    # ``_load_env_file_into_environ`` uses ``os.environ.setdefault`` so any
-    # TOWERWATCH_* value leaked by a prior test (e.g. ``test_dashboard_*``
-    # which writes ``TOWERWATCH_GITHUB_TOKEN=ghp_FAKE`` into os.environ) wins
-    # over the .env we write below. Defensively delenv everything we care
-    # about so this test sees a clean slate — same pattern as
-    # ``test_first_run_redirects_to_settings``.
-    for var in ("TOWERWATCH_GITHUB_TOKEN",
-                "TOWERWATCH_GITHUB_OAUTH_CLIENT_ID",
-                "TOWERWATCH_GITHUB_OAUTH_CLIENT_SECRET",
-                "TOWERWATCH_GITHUB_OAUTH_ACCESS_TOKEN",
-                "TOWERWATCH_GITHUB_OAUTH_REFRESH_TOKEN",
-                "TOWERWATCH_ANTHROPIC_API_KEY",
-                "TOWERWATCH_LLM_PROVIDER"):
-        monkeypatch.delenv(var, raising=False)
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import User
-    from tl_towerwatch.web import create_app
-
-    # Seed .env with a known PAT so the mask last-4 is deterministic and the
-    # route picks PAT mode by default. ``<none>`` would be rendered when the
-    # token is empty, but the spec assertion wants to exercise the masking
-    # path so we provide a token.
-    (tmp_path / ".env").write_text(
-        "TOWERWATCH_GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ12345678903fA2\n"
-        "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-FAKEKEY-c3K9\n"
-        "TOWERWATCH_LLM_PROVIDER=anthropic\n"
-    )
-    # Seed config.yaml with the skills registry entries the mock shows.
-    (tmp_path / "config.yaml").write_text(
-        "skills:\n"
-        "  superpowers:\n"
-        "    enabled: true\n"
-        "    description: code-review, verification, brainstorming\n"
-        "    cli_flag: --enable-superpowers\n"
-        "  ponytail:\n"
-        "    enabled: true\n"
-        "    description: custom review heuristics\n"
-        "    cli_flag: --skill ponytail\n"
-    )
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    # Seed the User row with avatar_url + display_name so the user card
-    # exercises both fields of ``_user_context``. The display name appears
-    # before the scopes chip per the mock layout.
-    with db.session() as s:
-        s.add(User(login="dimh",
-                   avatar_url="https://avatars.example.com/dimh.png",
-                   display_name="David Horma"))
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/settings")
-        assert r.status_code == 200
-        body = r.text
-
-        # --- Settings tab strip ---
-        # Active tab text + the warning-orange underline class marker
-        # (data-testid lets the assertion target the strip cleanly).
-        assert "Auth &amp; LLMs" in body or "Auth & LLMs" in body
-        assert "Apariencia" in body
-        assert "Refresh global" in body
-        assert "Skills registry" in body
-
-        # --- LEFT card titles / header ---
-        assert "GitHub Auth" in body
-        assert "Conectado" in body  # always-on green badge
-
-        # --- User card contents ---
-        assert "@dimh" in body
-        assert "David Horma" in body
-        assert "scopes" in body
-        assert "https://avatars.example.com/dimh.png" in body
-        assert "Desconectar" in body
-
-        # --- PAT token display (masking: prefix + bullets + last 4) ---
-        # The chip is exactly ``ghp_••••...<last4>``. The token we seeded
-        # ends in ``3fA2``, so the suffix must appear. We assert the
-        # prefix + suffix so a regression that drops either the mask or
-        # the real last-4 characters is caught.
-        assert "ghp_" in body
-        assert "3fA2" in body
-
-        # --- OAuth collapsed hint (always visible per the mock) ---
-        assert "Si elegís OAuth" in body
-        assert "ver gu" in body or "ver gu\xeda" in body or "guía" in body
-        assert "http://localhost:8765/auth/callback" in body
-
-        # --- Provider selector: all 4 options render + correct one
-        #     matches the configured default_provider ---
-        # The mock labels: Anthropic (Claude), OpenAI (Codex / GPT),
-        # MiniMax Code (Mavis), Ollama (local).
-        for label in ("Anthropic (Claude)", "OpenAI (Codex / GPT)",
-                      "MiniMax Code (Mavis)", "Ollama (local)"):
-            assert label in body, f"missing provider option: {label}"
-        # Anthropic must be the selected one — the seeded .env sets
-        # TOWERWATCH_LLM_PROVIDER=anthropic and there's no override in
-        # config.yaml. We anchor on the exact mock label, not the literal
-        # value, so the test still passes if the literal is later changed.
-        assert ">Anthropic (Claude)</option>" in body
-        # And the Anthropic expanded card is the one that renders.
-        assert "✓ configurado" in body
-        # OpenAI/MiniMax/Ollama collapsed summaries are present.
-        assert "OpenAI (Codex / GPT)" in body
-        assert "MiniMax Code (Mavis)" in body
-
-        # --- Skills registry preview ---
-        assert "Skills registry" in body
-        assert "superpowers" in body
-        # The count badge uses the list length; we seeded 2 enabled skills.
-        assert "2 configuradas" in body
-
-        # --- Bottom save bar ---
-        assert "Cambios se guardan autom" in body
-        # The saved-indicator text changed: when there's no ?ok=
-        # query param the bar shows the neutral "sin cambios
-        # pendientes" label. The success message lives behind ?ok=...
-        assert "sin cambios pendientes" in body
-        assert "Restaurar defaults" in body
-
-
 def test_dashboard_filters_and_sort_are_wired(tmp_path, monkeypatch, respx_mock):
     """Regression — the v1.2.0 dashboard rebuild left the filter bar,
     sort chips, and search box as visual placeholders. Tabs were
@@ -569,95 +410,6 @@ def test_dashboard_counters_include_authored_prs_without_review(tmp_path, monkey
         assert int(m.group(1)) == 2
 
 
-def test_dashboard_summarize_button_renders_per_pr(tmp_path, monkeypatch, respx_mock):
-    """When a PR card has no PRSummary row, the dashboard renders a
-    "Generate" button that POSTs to /pr/<o>/<n>/<num>/summarize. The
-    button disappears once the PR has a summary (covered by the
-    existing PRSummary template branch)."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, User
-    from tl_towerwatch.services.repos import add_repo
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    repo = add_repo(db, "acme", "alpha")
-    with db.session() as s:
-        s.add(User(login="dimh"))
-        s.flush()
-        s.add(PullRequest(repo_id=repo.id, number=1, title="feat", body="", author_login="dimh", state="open", draft=0, head_sha="a", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/?scope=all")
-        assert r.status_code == 200
-        # No summary yet → Generate button visible.
-        assert "Sin resumen generado" in r.text
-        assert 'action="/pr/acme/alpha/1/summarize"' in r.text
-        assert "Generar" in r.text
-
-
-def test_run_review_passes_all_skills_checkboxes(tmp_path, monkeypatch, respx_mock):
-    """Regression — the PR-detail Run-review widget renders one
-    <input type="checkbox" name="skills" value="..."> per enabled skill.
-    The browser encodes these as `skills=superpowers&skills=ponytail`
-    (multi-value). The previous route declared `skills: str = Form("")`
-    so FastAPI returned only the **last** checked value, dropping every
-    other skill from `skill_names`. After the fix the route declares
-    `skills: list[str] = Form([])` so every checked skill survives."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    # Defensive cleanup of any LLM env vars leaked from prior tests.
-    for var in ("TOWERWATCH_GITHUB_TOKEN",
-                "TOWERWATCH_LLM_DEFAULT_PROVIDER",
-                "TOWERWATCH_ANTHROPIC_API_KEY",
-                "TOWERWATCH_OPENAI_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    (tmp_path / ".env").write_text(
-        "TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n"
-        "TOWERWATCH_ANTHROPIC_API_KEY=sk-test\n"
-    )
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, User
-    from tl_towerwatch.services.repos import add_repo
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    repo = add_repo(db, "acme", "alpha")
-    with db.session() as s:
-        s.add(User(login="dimh"))
-        s.flush()
-        s.add(PullRequest(repo_id=repo.id, number=1, title="feat", body="", author_login="dimh", state="open", draft=0, head_sha="abc", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
-    # Patch run_review so we don't need to mock the full agent invocation.
-    # The route does `from tl_towerwatch.services.review_runner import
-    # run_review` so the name is bound in the routes module — patching
-    # rrunner.run_review at the source module wouldn't help. Patch the
-    # imported symbol in tl_towerwatch.web.routes instead.
-    import tl_towerwatch.web.routes as web_routes
-    captured = {}
-    def fake_run_review(*args, **kwargs):
-        captured.update(kwargs)
-    web_routes.run_review = fake_run_review
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.post("/pr/acme/alpha/1/run-review",
-                   data={"agent": "claude",
-                         "skills": ["superpowers", "ponytail"],
-                         "mode": "fresh"},
-                   follow_redirects=False)
-        assert r.status_code == 303
-        assert sorted(captured["skill_names"]) == ["ponytail", "superpowers"]
-
-
 def test_settings_auth_mode_persists(tmp_path, monkeypatch, respx_mock):
     """Regression — the settings form posts an `auth-mode` radio
     (pat/oauth) but the previous route never declared a Form param
@@ -704,54 +456,6 @@ def test_settings_auth_mode_persists(tmp_path, monkeypatch, respx_mock):
         assert 'value="oauth"' in body
         assert 'value="pat"' in body
         assert 'checked' in body  # at least one radio is selected
-
-
-def test_settings_anthropic_model_persists(tmp_path, monkeypatch, respx_mock):
-    """Regression — the settings LLM form posts an `anthropic_model`
-    <select>, but the previous route never declared a Form param for
-    it AND the <option> tags lacked `value=` attributes. So the
-    selection was silently dropped, and even if the route had read
-    the field it would have stored the visible label text. After the
-    fix both halves are corrected: options carry `value=` attributes
-    and the route reads + persists the model."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    for var in ("TOWERWATCH_GITHUB_TOKEN", "TOWERWATCH_ANTHROPIC_API_KEY",
-                "TOWERWATCH_OPENAI_API_KEY", "TOWERWATCH_LLM_DEFAULT_PROVIDER",
-                "TOWERWATCH_ANTHROPIC_MODEL"):
-        monkeypatch.delenv(var, raising=False)
-    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    load_settings(tmp_path)
-    app = create_app()
-    with TestClient(app) as c:
-        # Submit with haiku selected.
-        r = c.post("/settings/llm/save",
-                   data={"provider": "anthropic",
-                         "anthropic_api_key": "sk-test",
-                         "anthropic_api_key_edit": "",
-                         "openai_api_key_edit": "",
-                         "ollama_base_url_edit": "",
-                         "anthropic_model": "claude-3-5-haiku-latest"},
-                   follow_redirects=False)
-        assert r.status_code == 303
-        env = (tmp_path / ".env").read_text()
-        assert "TOWERWATCH_ANTHROPIC_MODEL=claude-3-5-haiku-latest" in env
-        # The rendered HTML now shows haiku as selected.
-        r = c.get("/settings")
-        assert r.status_code == 200
-        # The <option> tag for haiku must carry both `value=` (per the fix)
-        # and `selected` (matching the persisted state). Whitespace
-        # between the attribute close-quote and `selected` is preserved
-        # by Jinja, so use a regex that tolerates any number of spaces.
-        import re as _re
-        assert _re.search(
-            r'value="claude-3-5-haiku-latest"\s+selected>',
-            r.text,
-        ) is not None
 
 
 def test_settings_disconnect_clears_oauth(tmp_path, monkeypatch, respx_mock):
@@ -829,57 +533,6 @@ def test_repos_pause_all_disables_every_repo(tmp_path, monkeypatch, respx_mock):
         with db.session() as s:
             repos = list(s.execute(select(Repo)).scalars())
             assert all(r.enabled == 0 for r in repos)
-
-
-def test_summarize_without_llm_key_bounces_to_settings(tmp_path, monkeypatch, respx_mock):
-    """Regression — clicking the Generate button without an LLM key
-    configured used to return a raw JSON 400 blob. After the fix it
-    bounces to /settings?error=no_llm_key with a friendly banner so
-    the user lands on the page that actually fixes the problem."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    # Defensive cleanup: a previous test in this process may have
-    # written TOWERWATCH_ANTHROPIC_API_KEY to a different tmp_path
-    # .env, which _load_env_file_into_environ() then leaked into
-    # os.environ via setdefault. Strip them so this test exercises the
-    # "no LLM key" path reliably.
-    for var in ("TOWERWATCH_GITHUB_TOKEN",
-                "TOWERWATCH_LLM_DEFAULT_PROVIDER",
-                "TOWERWATCH_ANTHROPIC_API_KEY",
-                "TOWERWATCH_ANTHROPIC_MODEL",
-                "TOWERWATCH_OPENAI_API_KEY",
-                "TOWERWATCH_OLLAMA_BASE_URL"):
-        monkeypatch.delenv(var, raising=False)
-    (tmp_path / ".env").write_text(
-        "TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n"
-        # No TOWERWATCH_ANTHROPIC_API_KEY or OPENAI_API_KEY.
-    )
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, User
-    from tl_towerwatch.services.repos import add_repo
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    repo = add_repo(db, "acme", "alpha")
-    with db.session() as s:
-        s.add(User(login="dimh"))
-        s.flush()
-        s.add(PullRequest(repo_id=repo.id, number=1, title="feat", body="", author_login="dimh", state="open", draft=0, head_sha="a", base_ref="main", html_url="https://x/1", created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z", cached_at="2026-01-01T00:00:00Z"))
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.post("/pr/acme/alpha/1/summarize", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"].startswith("/settings")
-        assert "error=no_llm_key" in r.headers["location"]
-        # Following the redirect lands on /settings with the friendly
-        # banner rendered.
-        r = c.get("/settings?error=no_llm_key", follow_redirects=False)
-        assert r.status_code == 200
-        assert "No hay LLM configurado" in r.text
 
 
 def test_dashboard_dropdowns_show_all_repos_and_authors(tmp_path, monkeypatch, respx_mock):
@@ -1000,39 +653,6 @@ def test_dashboard_sort_supports_ascending(tmp_path, monkeypatch, respx_mock):
         for sort_id in ("updated_desc", "updated_asc", "created_desc", "created_asc", "title"):
             r = c.get(f"/?scope=all&sort={sort_id}")
             assert r.status_code == 200
-
-
-def test_settings_renders_when_no_user_yet(tmp_path, monkeypatch):
-    """Task 19: when no User row is seeded (first-run state, before any
-    GitHub sync has populated the users table), the settings page must
-    still 200 and the avatar initials fallback (``??``) must render.
-    Catches regressions where the new template hard-fails on a missing
-    ``user_display_name``."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.web import create_app
-
-    # No .env, no config.yaml, no User row — the worst-case first-run
-    # state where ``_user_context`` returns only ``user_login``.
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/settings")
-        assert r.status_code == 200
-        body = r.text
-        # The avatar block must show the initials fallback ``??`` — not a
-        # missing <img>, not a templating error leaking into the page.
-        assert "??</span>" in body
-        # The login still renders so the page is informative even without
-        # a User row.
-        assert "@dimh" in body
-        # The cards still render their titles so the user knows where
-        # they are.
-        assert "GitHub Auth" in body
-        assert "LLM" in body
 
 
 def test_dashboard_renders_status_counters(tmp_path, monkeypatch, respx_mock):
@@ -1222,89 +842,6 @@ def test_dashboard_counters_aggregate_across_prs(tmp_path, monkeypatch, respx_mo
         )
 
 
-def test_pr_detail_serves_tabs_data(tmp_path, monkeypatch):
-    """Spec §5.2: PR detail renders the 6 tabs (Overview, Commits, Files,
-    Reviews, Comments, tl_towerwatch reviews) with findings grouped under
-    tl_towerwatch reviews. Seed two review runs with findings in each of
-    the three lifecycle states (resolved/pending/new) and assert the
-    aggregated counters and the resolved-finding label render."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import (
-        PullRequest,
-        ReviewFinding,
-        ReviewRun,
-        User,
-        now_iso,
-    )
-    from tl_towerwatch.services.repos import add_repo
-    from tl_towerwatch.web import create_app
-
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    repo = add_repo(db, "o", "n")
-    with db.session() as s:
-        if s.get(User, "alice") is None:
-            s.add(User(login="alice"))
-        s.flush()
-        pr = PullRequest(repo_id=repo.id, number=1, title="tabs",
-                         body="desc", author_login="alice", state="open",
-                         draft=0, head_sha="abcdef0123", base_ref="main",
-                         html_url="u", created_at=now_iso(),
-                         updated_at=now_iso(), cached_at=now_iso())
-        s.add(pr); s.flush()
-        run1 = ReviewRun(pr_id=pr.id, agent_runner="claude",
-                         skills_json="[]", mode="fresh", status="done",
-                         started_at=now_iso(), finished_at=now_iso())
-        run2 = ReviewRun(pr_id=pr.id, agent_runner="codex",
-                         skills_json="[]", mode="compare", status="done",
-                         started_at=now_iso(), finished_at=now_iso())
-        s.add_all([run1, run2]); s.flush()
-        # Run #1 (older): a resolved finding (fixed in a later commit).
-        s.add(ReviewFinding(review_run_id=run1.id,
-                            finding_key="a.py:1:old", severity="high",
-                            file_path="a.py", line=1,
-                            description="dead code",
-                            status="resolved",
-                            resolved_in_commit="abcdef0123"))
-        # Run #2 (newer): a brand-new finding and a still-pending one.
-        s.add(ReviewFinding(review_run_id=run2.id,
-                            finding_key="b.py:7:leak", severity="medium",
-                            file_path="b.py", line=7,
-                            description="resource leak",
-                            status="new"))
-        s.add(ReviewFinding(review_run_id=run2.id,
-                            finding_key="c.py:3:mut", severity="low",
-                            file_path="c.py", line=3,
-                            description="mutable default arg",
-                            status="pending"))
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/pr/o/n/1")
-        assert r.status_code == 200
-        body = r.text
-        # All six tabs are rendered as labels.
-        assert "Overview" in body
-        assert "Commits" in body
-        assert "Files" in body
-        assert "Reviews" in body
-        assert "Comments" in body
-        assert "tl_towerwatch reviews" in body
-        # Aggregated counters from the findings we seeded (1 resolved,
-        # 1 pending, 1 new) appear in the spec §5.2 chip strip.
-        assert "1 resueltos" in body
-        assert "1 pendientes" in body
-        assert "1 nuevos" in body
-        # The resolved-finding label is rendered (test spec asks for
-        # "resuelto" / "✓ resuelto" case-insensitive).
-        assert "resuelto" in body.lower()
-        # The pending finding also renders its own status label so the
-        # bug where all findings shared the same status word is caught.
-        assert "pendiente" in body.lower()
-
-
 def test_dashboard_has_global_refresh_button(tmp_path, monkeypatch, respx_mock):
     """Regression — the dashboard had no global "Refresh PRs" action, so
     the only way to repopulate the cache from GitHub was the CLI. After
@@ -1325,51 +862,6 @@ def test_dashboard_has_global_refresh_button(tmp_path, monkeypatch, respx_mock):
         assert r.status_code == 200
         assert 'action="/refresh-all"' in r.text
         assert "Refresh PRs" in r.text
-
-
-def test_dashboard_pr_cards_have_per_pr_actions(tmp_path, monkeypatch, respx_mock):
-    """Regression — the dashboard listed PRs as plain cards with no link
-    to the detail page and no per-PR refresh / run-review buttons, so
-    the dashboard was a dead end. After the fix each card links to the
-    detail route and exposes Refresh + Run review forms.
-    """
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, User, now_iso
-    from tl_towerwatch.services.repos import add_repo
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    repo = add_repo(db, "acme", "widgets")
-    with db.session() as s:
-        if s.get(User, "dimh") is None:
-            s.add(User(login="dimh"))
-        s.flush()
-        s.add(PullRequest(repo_id=repo.id, number=42, title="feat: hello",
-                          body=None, author_login="dimh", state="open",
-                          draft=0, head_sha="deadbeef", base_ref="main",
-                          html_url="https://example/pr/42",
-                          created_at=now_iso(), updated_at=now_iso(),
-                          cached_at=now_iso()))
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/")
-        assert r.status_code == 200
-        body = r.text
-        # Card links to the PR detail page (owner/name/number).
-        assert 'href="/pr/acme/widgets/42"' in body
-        # Per-PR refresh + run-review forms target the existing routes.
-        assert 'action="/pr/acme/widgets/42/refresh"' in body
-        assert 'action="/pr/acme/widgets/42/run-review"' in body
-        # Owner/name is shown in monospace next to the title.
-        assert "acme/widgets" in body
-        assert "#42" in body
 
 
 def test_refresh_all_route_redirects_to_root(tmp_path, monkeypatch, respx_mock):
@@ -1639,82 +1131,6 @@ def _seed_pr_detail(tmp_path, with_summary: bool = True):
     return db
 
 
-def test_pr_detail_matches_mock_layout(tmp_path, monkeypatch):
-    """v1.1 Task 11: the v3 mock rebuild of `/pr/{owner}/{name}/{number}`
-    must render the breadcrumb row (← dashboard + repo chip + #N +
-    "abrir en GitHub"), the per-PR refresh form, all six tabs in the
-    mock order, the RESUMEN AUTOMÁTICO chip when a summary exists, the
-    3 finding-status labels (RESUELTO/PENDIENTE/NUEVO), and the right-
-    column Run review widget (agent select + skills checkboxes + Run
-    button)."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    db = _seed_pr_detail(tmp_path, with_summary=True)
-    from tl_towerwatch.web import create_app
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/pr/o/n/1")
-        assert r.status_code == 200
-        body = r.text
-
-        # --- breadcrumb row ---
-        assert "← volver al dashboard" in body
-        assert "o/n" in body  # owner/name chip
-        assert "#1" in body
-        assert "abrir en GitHub" in body
-
-        # --- per-PR refresh form ---
-        # The button text is exact ("Refrescar este PR") and the action
-        # points at the existing refresh route.
-        assert "↻ Refrescar este PR" in body
-        assert 'action="/pr/o/n/1/refresh"' in body
-
-        # --- all six tabs in mock order (Overview / Commits / Files /
-        #     Reviews / Comments / 🤖 tl_towerwatch reviews) ---
-        # ``in`` preserves order on the substring search; we walk through
-        # each label in turn so the assertion catches a swap of any two
-        # tabs (the mock labels are user-chosen and must not be reordered).
-        idx_overview    = body.index("Overview")
-        idx_commits     = body.index("Commits (")
-        idx_files       = body.index("Files (")
-        idx_reviews     = body.index("Reviews (")
-        idx_comments    = body.index("Comments (")
-        idx_agent       = body.index("🤖 tl_towerwatch reviews (")
-        assert idx_overview < idx_commits < idx_files < idx_reviews \
-            < idx_comments < idx_agent, (
-                f"tabs out of order: {idx_overview=} {idx_commits=} "
-                f"{idx_files=} {idx_reviews=} {idx_comments=} {idx_agent=}"
-            )
-
-        # --- resumen automático chip when summary exists ---
-        assert "RESUMEN AUTOMÁTICO" in body
-
-        # --- finding-status labels (the v3 mock uses uppercase for the
-        #     per-finding badge) ---
-        assert "✓ RESUELTO" in body
-        assert "⚠ PENDIENTE" in body
-        # NUEVO is rendered in the mock for findings with status="new".
-        # The seed only has resolved + pending, so NUEVO may not be
-        # present — but the per-finding template still defines the
-        # branch, so we do not assert it here. Instead verify the
-        # counters strip renders the aggregated counters strip.
-        assert "resueltos" in body
-        assert "pendientes" in body
-        assert "nuevos" in body
-
-        # --- run review widget ---
-        # Agent select with the four mock options.
-        assert 'name="agent"' in body
-        assert "<option" in body and "Claude" in body
-        # Skills checkboxes for the default registry (superpowers + ponytail).
-        assert 'name="skills"' in body
-        assert "superpowers" in body
-        assert "ponytail" in body
-        # Big green Run button.
-        assert "▶ Run review" in body
-        # Form action posts to the existing run-review route.
-        assert 'action="/pr/o/n/1/run-review"' in body
-
-
 def test_pr_detail_summary_card_hidden_when_no_summary(tmp_path, monkeypatch):
     """v1.1 Task 11: when a PRSummary row is absent the green resumen
     card is fully hidden — not rendered with empty text, not stubbed
@@ -1733,181 +1149,6 @@ def test_pr_detail_summary_card_hidden_when_no_summary(tmp_path, monkeypatch):
         # summary shouldn't blank the page.
         assert "← volver al dashboard" in body
         assert "Overview" in body
-
-
-def test_dashboard_matches_mock_layout(tmp_path, monkeypatch, respx_mock):
-    """The v2 dashboard rebuild (Task 11) renders every block the mock
-    defines: repo chip + #N, metadata line, title link, RESUMEN chip + text,
-    reviewer avatar bubble sourced from User.avatar_url, diff stats
-    (+additions / -deletions, N archivos, CI ✓), Run-review form action
-    URL still intact, pr.html_url exposed as a link, and the inline
-    ``📄 Ver descripción del PR`` disclosure.
-
-    Filter tabs / repo+author dropdowns / title search box are
-    deliberately NOT asserted: they're visual placeholders without server
-    semantics yet. They render, but the task spec says no client filtering
-    is needed at this stage."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
-    # The dashboard validates the PAT before rendering; stub /user.
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import (
-        PRSummary,
-        PullRequest,
-        Review,
-        User,
-        now_iso,
-    )
-    from tl_towerwatch.services.repos import add_repo
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    # Repo owner/name must match what the test asserts ("hari-corp/test").
-    repo = add_repo(db, "hari-corp", "test")
-    with db.session() as s:
-        # Seed the PR author with an avatar — even though the template
-        # doesn't render the author avatar, we cover the User code path
-        # used by the reviewer join (User.avatar_url is what the avatar
-        # bubble image reads).
-        for login, avatar in (
-            ("dimh",   "https://avatars.example.com/dimh.png"),
-            ("alice",  "https://avatars.example.com/alice.png"),
-            ("bob",    "https://avatars.example.com/bob.png"),
-        ):
-            if s.get(User, login) is None:
-                s.add(User(login=login, avatar_url=avatar))
-        s.flush()
-        pr = PullRequest(
-            repo_id=repo.id,
-            number=42,
-            title="feat: dashboard v2 layout",
-            body="Detailed PR body that the disclosure element reveals.",
-            author_login="alice",
-            state="open",
-            draft=0,
-            head_sha="abcdef0123",
-            base_ref="main",
-            # pr.html_url must round-trip through the template into an <a href>.
-            html_url="https://github.com/hari-corp/test/pull/42",
-            created_at=now_iso(),
-            updated_at=now_iso(),
-            cached_at=now_iso(),
-            additions=247,
-            deletions=89,
-            changed_files=12,
-            commits_count=3,
-        )
-        s.add(pr); s.flush()
-        # Add a "commented" review by the dashboard's login user ("dimh")
-        # so the PR clears the ``mine_and_review`` scope filter. The task
-        # spec only asks us to render bob's avatar — dimh's review is
-        # purely a scope hook and won't change the mock-card assertions.
-        s.add(Review(pr_id=pr.id, reviewer_login="dimh",
-                     state="commented",
-                     submitted_at=now_iso(), body="looking"))
-        # Reviewer "bob" with state="approved" — this drives both the
-        # reviewer avatar bubble (bob's avatar_url is sourced from User)
-        # and the badge color in the metadata row.
-        s.add(Review(pr_id=pr.id, reviewer_login="bob",
-                     state="approved",
-                     submitted_at=now_iso(), body="lgtm"))
-        # PRSummary row (PK = pr_id) — the mock card renders a
-        # "RESUMEN" chip with this text when present.
-        s.add(PRSummary(pr_id=pr.id,
-                        summary="Refactor + simplify dashboard render path.",
-                        head_sha="abcdef0123",
-                        model="claude-sonnet",
-                        generated_at=now_iso()))
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/")
-        assert r.status_code == 200
-        body = r.text
-
-        # --- Repo chip + number ---
-        assert "hari-corp/test" in body
-        assert "#42" in body
-
-        # --- Diff stats badges ---
-        assert "+247 / -89" in body
-        assert "12 archivos" in body
-        # The mock also keeps the "commits post-creation" callout wired
-        # to ``pr.commits_count`` (3 in this fixture).
-        assert "3 commits post-creation" in body
-
-        # --- RESUMEN chip + summary text ---
-        assert "RESUMEN" in body
-        assert "Refactor + simplify dashboard render path." in body
-
-        # --- Reviewer avatar bubble (must be an <img> sourced from
-        # User.avatar_url, not an initials fallback). ---
-        assert 'src="https://avatars.example.com/bob.png"' in body
-        # The avatar bubble is wrapped in an <img> element — this guards
-        # against the fallback-to-initials regression.
-        assert '<img' in body and 'bob.png' in body
-
-        # --- Run review form still hits the existing route. The mock
-        # relabels the button "▶ Review →" but the action URL is the same
-        # POST endpoint the v1.0 dashboard already wired up. ---
-        assert 'action="/pr/hari-corp/test/42/run-review"' in body
-        assert "▶ Review" in body
-
-        # --- pr.html_url rendered as a link to GitHub. ---
-        assert 'href="https://github.com/hari-corp/test/pull/42"' in body
-        assert "Ver en GitHub" in body
-
-        # --- Inline body disclosure: <details><summary> 📄 Ver descripción
-        # del PR — toggles the PR body text. ---
-        assert "📄 Ver descripción del PR" in body
-        assert "<details" in body
-        assert "Detailed PR body that the disclosure element reveals." in body
-
-        # --- Status counters strip still rendered (regression guard for
-        # the spec §5.1 strip the mock rebuilds around). ---
-        assert "awaiting my review" in body.lower()
-        assert "needs response" in body.lower()
-        assert "changes requested" in body.lower()
-        assert "ready to merge" in body.lower()
-
-
-def test_settings_save_buttons_present(tmp_path, monkeypatch, respx_mock):
-    """Regression — the v1.2.0 mock rebuild wrapped the auth and LLM
-    inputs in <form action="/settings/auth/save"> and
-    <form action="/settings/llm/save"> but never added a submit button
-    inside either form, so clicking through the mock-equivalent UI
-    silently no-op'd. After the fix each form carries its own Save
-    button and visible input fields, so the user can actually save."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_OLD\n")
-    respx_mock.get("https://api.github.com/user").mock(
-        return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    load_settings(tmp_path)
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/settings")
-        assert r.status_code == 200
-        body = r.text
-        # Both forms have a submit button
-        assert 'action="/settings/auth/save"' in body
-        assert 'action="/settings/llm/save"' in body
-        # Buttons are inside the rendered HTML; check the inner text
-        # rather than the surrounding tags because indentation adds
-        # whitespace between the `<button ...>` and the label.
-        assert "Guardar Auth" in body
-        assert "Guardar LLM" in body
-        assert body.count('type="submit"') >= 2
-        # Visible inputs the user actually edits
-        assert 'name="github_token_edit"' in body
-        assert 'name="anthropic_api_key_edit"' in body
-        assert 'name="provider"' in body
 
 
 def test_settings_auth_save_roundtrip(tmp_path, monkeypatch, respx_mock):
@@ -1945,34 +1186,286 @@ def test_settings_auth_save_roundtrip(tmp_path, monkeypatch, respx_mock):
         assert "TOWERWATCH_GITHUB_TOKEN=ghp_NEW1234" in env2
 
 
-def test_settings_llm_save_roundtrip(tmp_path, monkeypatch, respx_mock):
-    """Submitting the LLM form switches default_provider and rewrites
-    the chosen API key in .env, blank edits leave values untouched."""
+
+
+# ---------------------------------------------------------------------------
+# v1.3.0 — manual description / notes save routes, prompt viewer route,
+# per-skill prompts save route. These replace the v1.1 / v1.2 summarize +
+# run-review + LLM block that v1.3.0 removed.
+# ---------------------------------------------------------------------------
+
+
+def test_pr_manual_description_save_route(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0: POST /pr/<owner>/<name>/<number>/manual-description persists
+    the text and redirects back to the PR detail."""
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    (tmp_path / ".env").write_text(
-        "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-OLD\n"
-        "TOWERWATCH_LLM_DEFAULT_PROVIDER=anthropic\n"
-    )
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="dimh"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="dimh", state="open", draft=0,
+            head_sha="abc", base_ref="main",
+            html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
     respx_mock.get("https://api.github.com/user").mock(
         return_value=Response(200, json={"login": "dimh"},
-                              headers={"X-OAuth-Scopes": "repo, read:user"})
-    )
-    from tl_towerwatch.config import load_settings
-    load_settings(tmp_path)
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
     app = create_app()
     with TestClient(app) as c:
-        # Switch to OpenAI with a new key.
-        r = c.post("/settings/llm/save",
-                   data={"provider": "openai",
-                         "openai_api_key_edit": "sk-NEW",
-                         "anthropic_api_key_edit": "",
-                         "ollama_base_url_edit": ""},
+        r = c.post("/pr/acme/alpha/1/manual-description",
+                   data={"description": "TL;DR for reviewers"},
                    follow_redirects=False)
         assert r.status_code == 303
-        env = (tmp_path / ".env").read_text()
-        # The persist helper writes TOWERWATCH_LLM_PROVIDER (not the
-        # legacy _DEFAULT_PROVIDER key).
-        assert "TOWERWATCH_LLM_PROVIDER=openai" in env
-        assert "TOWERWATCH_OPENAI_API_KEY=sk-NEW" in env
-        # Blank anthropic edit must keep the old anthropic key.
-        assert "TOWERWATCH_ANTHROPIC_API_KEY=sk-ant-OLD" in env
+        assert "ok=description" in r.headers["location"]
+    with db.session() as s:
+        pr = s.query(PullRequest).first()
+        assert pr.manual_description == "TL;DR for reviewers"
+    # Empty form clears the field.
+    with TestClient(app) as c:
+        c.post("/pr/acme/alpha/1/manual-description",
+               data={"description": ""}, follow_redirects=False)
+    with db.session() as s:
+        pr = s.query(PullRequest).first()
+        assert pr.manual_description is None
+
+
+def test_pr_manual_notes_save_route(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0: POST /pr/<owner>/<name>/<number>/manual-notes persists the
+    text and redirects back to the PR detail."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="dimh"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="dimh", state="open", draft=0,
+            head_sha="abc", base_ref="main",
+            html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/manual-notes",
+                   data={"notes": "release notes v1"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert "ok=notes" in r.headers["location"]
+    with db.session() as s:
+        pr = s.query(PullRequest).first()
+        assert pr.manual_notes == "release notes v1"
+
+
+def test_pr_show_review_prompt_route_returns_html_fragment(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0: POST /pr/.../show-review-prompt renders the assembled
+    prompt body. When the request advertises HTMX, the response is a
+    fragment; otherwise it redirects back with the slot/mode echoed on
+    the query string."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    from tl_towerwatch.config_io import save_config_yaml
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    save_config_yaml(tmp_path / "config.yaml", {
+        "skills": {"superpowers": {
+            "enabled": True, "cli_flag": "--x", "description": "d",
+            "prompts": {"review": "REVIEW {title}",
+                        "post_review": "POST {findings}",
+                        "check_resolved": "CHECK {findings}"}}}})
+    with db.session() as s:
+        s.add(User(login="dimh"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="dimh", state="open", draft=0,
+            head_sha="abc", base_ref="main",
+            html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1").mock(
+        return_value=Response(200,
+            json={"number": 1, "title": "feat X", "body": "b",
+                  "user": {"login": "dimh"}, "state": "open",
+                  "draft": False, "head": {"sha": "abc"},
+                  "base": {"ref": "main"}, "html_url": "https://x/1",
+                  "created_at": "2026-01-01T00:00:00Z",
+                  "updated_at": "2026-01-01T00:00:00Z",
+                  "requested_reviewers": []}))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1/files").mock(
+        return_value=Response(200, json=[]))
+    app = create_app()
+    with TestClient(app) as c:
+        # HTMX request → fragment.
+        r = c.post("/pr/acme/alpha/1/show-review-prompt",
+                   data={"slot": "review", "mode": "fresh"},
+                   headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert "REVIEW feat X" in r.text
+        assert 'data-slot="review"' in r.text
+        assert 'data-action="copy"' in r.text
+        # Non-HTMX → redirect with slot/mode echoed.
+        r2 = c.post("/pr/acme/alpha/1/show-review-prompt",
+                    data={"slot": "post_review", "mode": "fresh"},
+                    follow_redirects=False)
+        assert r2.status_code == 303
+        assert "prompt_slot=post_review" in r2.headers["location"]
+
+
+def test_settings_skills_save_persists_prompts(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0: POST /settings/skills persists the per-skill prompts back
+    to config.yaml. The route uses ``await request.form()`` and parses
+    the dotted field names so the standard Form() binding doesn't fight
+    with multi-value keys."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.config_io import load_config_yaml
+    from tl_towerwatch.db.database import engine_from_settings
+    # Skills saved via web form must have the expected slots. Import via
+    # the package-level re-export to make sure the registry helper is the
+    # one the settings form actually uses.
+    from tl_towerwatch.skills.registry import load_registry
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/settings/skills", data={
+            "skill.superpowers.enabled": "on",
+            "skill.superpowers.name": "superpowers",
+            "skill.superpowers.cli_flag": "--x",
+            "skill.superpowers.description": "review heuristics",
+            "skill.superpowers.prompt.review": "REV {title}",
+            "skill.superpowers.prompt.post_review": "POST {findings}",
+            "skill.superpowers.prompt.check_resolved": "CHECK {findings}",
+            "skill.ponytail.enabled": "",
+            "skill.ponytail.name": "ponytail",
+            "skill.ponytail.cli_flag": "--y",
+            "skill.ponytail.description": "pony heuristics",
+            "skill.ponytail.prompt.review": "PONY-REV {title}",
+            "skill.ponytail.prompt.post_review": "PONY-POST {findings}",
+            "skill.ponytail.prompt.check_resolved": "PONY-CHECK {findings}",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        assert "ok=skills" in r.headers["location"]
+    cfg = load_config_yaml(tmp_path / "config.yaml")
+    assert "skills" in cfg
+    assert cfg["skills"]["superpowers"]["enabled"] is True
+    assert cfg["skills"]["superpowers"]["prompts"]["review"] == "REV {title}"
+    assert cfg["skills"]["ponytail"]["enabled"] is False
+    assert cfg["skills"]["ponytail"]["prompts"]["review"] == "PONY-REV {title}"
+    # load_registry round-trips the file we just wrote.
+    skills = load_registry(tmp_path)
+    by_name = {s.name: s for s in skills}
+    assert by_name["superpowers"].prompts["review"] == "REV {title}"
+    assert by_name["ponytail"].prompts["review"] == "PONY-REV {title}"
+
+
+def test_settings_renders_no_llm_block(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0: /settings no longer renders the LLM block (API keys,
+    provider picker, model selector, Anthropic key chip)."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/settings")
+        assert r.status_code == 200
+        body = r.text
+        # LLM card testid removed; skills card present.
+        assert "data-testid=\"skills-card\"" in body
+        assert "data-testid=\"llm-card\"" not in body
+        # Provider selector / model picker gone.
+        assert "data-testid=\"provider-select\"" not in body
+        assert "TOWERWATCH_LLM_PROVIDER" not in body
+        # Skills prompts editor visible.
+        assert "data-testid=\"skills-form\"" in body
+        for slot in ("review", "post_review", "check_resolved"):
+            assert f"prompt.{slot}" in body or f"prompt_{slot}" in body
+
+
+def test_pr_detail_renders_prompt_viewer(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0: /pr/.../ renders the right-side prompt viewer with the
+    three slot tabs and the manual description / notes edit forms."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="dimh"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="dimh", state="open", draft=0,
+            head_sha="abc", base_ref="main",
+            html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+            manual_description="existing desc",
+            manual_notes="existing notes",
+        ))
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/pr/acme/alpha/1")
+        assert r.status_code == 200
+        body = r.text
+        # Manual description / notes forms present with current values.
+        assert 'action="/pr/acme/alpha/1/manual-description"' in body
+        assert 'action="/pr/acme/alpha/1/manual-notes"' in body
+        assert "existing desc" in body
+        assert "existing notes" in body
+        # Prompt viewer with three slot tabs.
+        assert "id=\"prompt-viewer\"" in body
+        assert 'hx-post="/pr/acme/alpha/1/show-review-prompt"' in body
+        # Run-review widget is gone (no agent select, no /run-review form).
+        assert "/run-review" not in body
+        assert "Agente runner" not in body

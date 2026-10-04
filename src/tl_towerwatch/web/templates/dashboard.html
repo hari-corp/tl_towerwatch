@@ -12,13 +12,7 @@
 </div>
 <p style="color:var(--muted);margin:0 0 14px 0">{{ prs|length }} PRs visibles · login: {{ login }}</p>
 
-<!-- Status counters strip (spec §5.1). The route translates raw badge names
-     (awaiting_my_review / pending_response / ...) into the 4 spec counter
-     keys via BADGE_TO_COUNTER; we just render them in a fixed English
-     order with a hard-coded color matching the badge palette in the mock.
-     The label text is left lowercase here; CSS ``text-transform: uppercase``
-     handles display while the underlying HTML keeps the original casing
-     for downstream tooling (and the case-sensitive regression tests). -->
+<!-- Status counters strip (spec §5.1). -->
 {% set COUNTERS = [
   ('awaiting_my_review', '#f78166'),
   ('needs_response',     '#d29922'),
@@ -34,13 +28,7 @@
   {% endfor %}
 </div>
 
-<!-- Filter bar — fully wired to query params. Each chip is an anchor that
-     preserves the rest of the filter state via query-string composition, so
-     toggling the scope keeps the user's repo/author/search/sort selections.
-     The dropdowns and search box live inside a single <form method="get">
-     that submits on change for the selects and on Enter for the search
-     input; hidden inputs mirror the other filter values so submitting one
-     input doesn't reset the rest. -->
+<!-- Filter bar — fully wired to query params. -->
 <div style="display:flex;flex-direction:column;gap:8px;padding:10px 20px;border-bottom:1px solid var(--border);">
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
     <div style="display:flex;gap:4px;font-size:13px;">
@@ -58,11 +46,6 @@
     </div>
     <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
       <span>order:</span>
-      {# Three sort chips, each toggling between asc/desc on click. The
-         arrow + the ``sort=...`` query param both flip when the user
-         re-clicks the active chip, so there's only one chip per type
-         instead of two. The ``title`` chip has no ascending/descending
-         variant because alphabetical sorting is inherently directional. #}
       {% set scope_part %}{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}{% endset %}
       {% set repo_part %}{% if repo %}&repo={{ repo }}{% endif %}{% endset %}
       {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
@@ -92,7 +75,6 @@
     </div>
   </div>
   <form method="get" action="/" style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin:0;">
-    {# Hidden mirrors preserve scope + sort when the user changes repo/author/q. #}
     <input type="hidden" name="scope" value="{{ scope }}">
     <input type="hidden" name="sort" value="{{ sort }}">
     <span>Filter by:</span>
@@ -130,8 +112,6 @@
 <div style="padding:12px 20px;display:flex;flex-direction:column;gap:10px;">
   {% for pr in prs %}
     {% set pr_badges = badges_by_pr.get(pr.id, []) %}
-    {# Card border picks the highest-priority badge so the colored strip
-       communicates the PR's most important state at a glance. #}
     {% set border_color = '#8b949e' %}
     {% for b in pr_badges %}
       {% if b.name in ('approved', 'pending_response', 'changes_requested', 'awaiting_my_review') %}
@@ -155,31 +135,29 @@
            style="font-size:15px;font-weight:600;color:var(--fg);text-decoration:none;display:block;margin-bottom:8px;">
           {{ pr.title }}
         </a>
-        {% if pr.summary and pr.summary.summary %}
-        <div style="font-size:13px;color:var(--fg);line-height:1.5;margin-bottom:10px;padding:8px 10px;background:var(--bg-secondary);border-left:3px solid var(--success);border-radius:4px;">
+
+        {# Manual description (author-only). Shows the first 4 lines or so
+           so reviewers can scan a TL;DR without opening the PR. Empty when
+           the author hasn't filled it in yet — the link to edit lives on
+           the PR detail page. #}
+        {% if pr.manual_description %}
+        <div style="font-size:13px;color:var(--fg);line-height:1.5;margin-bottom:6px;padding:8px 10px;background:var(--bg-secondary);border-left:3px solid var(--accent);border-radius:4px;">
           <div style="margin-bottom:4px;">
-            <span style="background:var(--success);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px;font-weight:700;">RESUMEN</span>
-            <span style="color:var(--muted);font-size:10px;">{{ pr.summary.model }} · head: {{ pr.summary.head_sha[:7] }}</span>
+            <span style="background:var(--accent);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px;font-weight:700;">DESCRIPCIÓN</span>
           </div>
-          {{ pr.summary.summary }}
+          {{ pr.manual_description }}
         </div>
-        {% else %}
-        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;padding:6px 10px;background:var(--bg-secondary);border:1px dashed var(--border);border-radius:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <span>Sin resumen generado.</span>
-          <form method="post"
-                action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/summarize"
-                style="margin:0">
-            <button type="submit"
-                    style="background:var(--accent);color:#fff;border:0;padding:3px 9px;border-radius:4px;font-size:11px;cursor:pointer;">
-              ✨ Generar
-            </button>
-          </form>
+        {% endif %}
+        {% if pr.manual_notes %}
+        <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:10px;padding:6px 10px;background:var(--bg-secondary);border-left:3px solid var(--warning);border-radius:4px;">
+          <div style="margin-bottom:3px;">
+            <span style="background:var(--warning);color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px;font-weight:700;">NOTAS</span>
+          </div>
+          {{ pr.manual_notes }}
         </div>
         {% endif %}
 
-        <!-- Reviewers row: one avatar bubble per Review row joined with User.
-             Pending reviewers (no review row yet) intentionally aren't
-             rendered — the DB doesn't store them. -->
+        <!-- Reviewers row -->
         {% if pr.reviewers %}
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:12px;">
           <span style="color:var(--muted);">Reviewers:</span>
@@ -210,17 +188,10 @@
         </details>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;">
-        <form method="post"
-              action="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}/run-review"
-              style="margin:0">
-          <input type="hidden" name="agent" value="claude">
-          <input type="hidden" name="skills" value="">
-          <input type="hidden" name="mode" value="fresh">
-          <button type="submit"
-                  style="width:100%;background:var(--success);color:#fff;border:0;padding:6px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
-            ▶ Review →
-          </button>
-        </form>
+        <a href="/pr/{{ pr.repo_owner }}/{{ pr.repo_name }}/{{ pr.number }}#prompt-viewer"
+           style="background:var(--success);color:#fff;border:0;padding:6px 12px;border-radius:5px;font-size:12px;text-decoration:none;text-align:center;font-weight:600;">
+          ▶ Review →
+        </a>
         <a href="{{ pr.html_url }}" target="_blank" rel="noopener noreferrer"
            style="background:var(--code-bg);color:var(--muted);border:1px solid var(--border);padding:4px 10px;border-radius:5px;font-size:11px;text-decoration:none;text-align:center;">
           Ver en GitHub ↗

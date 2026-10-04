@@ -1,34 +1,24 @@
 {% extends "base.html" %}
-{% block title %}Settings — Auth & LLMs{% endblock %}
+{% block title %}Settings — Auth & Skills{% endblock %}
 {% block content %}
 
-{# Surface a friendly banner for the auth-error and no-LLM-error query
-   params. The /theme route also writes ?error= but that's the only one
-   that actually goes through the dashboard; settings is where users come
-   to fix credentials. #}
+{# Friendly banners for the auth-error / first-run / test-connection query
+   params. v1.3.0 removed the no-llm-key banner — there is no LLM block
+   to surface a missing API key for anymore. #}
 {% if request.query_params.get('error') == 'github_auth' %}
 <div data-testid="auth-error-banner"
      style="background:rgba(248,81,73,0.15);border:1px solid var(--danger);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
   ⚠ <strong>GitHub auth failed.</strong> El token es inválido, expiró o no tiene los scopes
   requeridos (<code>repo</code>, <code>read:user</code>). Pegá un PAT nuevo abajo y Guardar Auth.
 </div>
-{% elif request.query_params.get('error') == 'no_llm_key' %}
-<div data-testid="no-llm-error-banner"
-     style="background:rgba(210,153,34,0.15);border:1px solid var(--warning);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
-  ⚠ <strong>No hay LLM configurado.</strong> Para generar resúmenes automáticos y correr reviews
-  necesitás una API key. Pegá tu Anthropic (sk-ant-…) u OpenAI (sk-…) abajo y Guardar LLM.
-</div>
 {% endif %}
 {% if request.query_params.get('first_run') == '1' %}
 <div data-testid="first-run-banner"
      style="background:rgba(88,166,255,0.15);border:1px solid var(--accent);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
   👋 <strong>Primera vez.</strong> Pegá tu GitHub PAT abajo para empezar. La próxima vez podés volver
-  a esta pantalla para ajustar credenciales y LLM.
+  a esta pantalla para ajustar credenciales y skills.
 </div>
 {% endif %}
-{# Test-connection banners. The /settings/auth/test and /settings/llm/test
-   routes redirect back with these query params so the user gets immediate
-   visual feedback instead of having to navigate away to check. #}
 {% set test_result = request.query_params.get('test') %}
 {% if test_result == 'auth_ok' %}
 <div data-testid="test-auth-ok"
@@ -47,40 +37,27 @@
      style="background:rgba(210,153,34,0.15);border:1px solid var(--warning);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
   ⚠ <strong>Sin token configurado.</strong> Pegá un PAT abajo antes de probar.
 </div>
-{% elif test_result == 'llm_ok' %}
-<div data-testid="test-llm-ok"
-     style="background:rgba(63,185,80,0.15);border:1px solid var(--success);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
-  ✓ <strong>LLM OK.</strong> El provider respondió correctamente al ping.
-</div>
-{% elif test_result == 'llm_fail' %}
-<div data-testid="test-llm-fail"
-     style="background:rgba(248,81,73,0.15);border:1px solid var(--danger);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
-  ✗ <strong>LLM falló.</strong> El provider rechazó el ping
-  (<code>{{ request.query_params.get('reason', 'error') }}</code>). Reintentá con otra API key.
-</div>
-{% elif test_result == 'llm_missing' %}
-<div data-testid="test-llm-missing"
-     style="background:rgba(210,153,34,0.15);border:1px solid var(--warning);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
-  ⚠ <strong>Sin LLM configurado.</strong> Pegá una API key abajo antes de probar.
+{% endif %}
+{% if request.query_params.get('ok') == 'skills' %}
+<div data-testid="skills-saved-banner"
+     style="background:rgba(63,185,80,0.15);border:1px solid var(--success);border-radius:6px;padding:10px 14px;margin-bottom:14px;color:var(--fg);font-size:13px;">
+  ✓ <strong>Skills guardadas.</strong> Los templates de prompts fueron actualizados.
 </div>
 {% endif %}
 
-<h2 style="margin:0 0 4px 0;">Settings — Auth &amp; LLMs</h2>
+<h2 style="margin:0 0 4px 0;">Settings — Auth &amp; Skills</h2>
 <p class="subtitle" style="margin:0 0 16px 0;">
-  Configuración global: cómo te autenticás con GitHub y qué LLM/agent usás para los reviews
+  Configuración global: cómo te autenticás con GitHub y qué skills usar para los reviews
 </p>
 
 {# ---------------------------------------------------------------------------
-   Settings tab strip — visual only, the four tabs map to future per-tab
-   routes. Only "Auth & LLMs" is wired today; the other three render as
-   inactive (muted, no underline) labels per the mock.
+   Settings tab strip — visual only.
    --------------------------------------------------------------------------- #}
 <div data-testid="settings-tabs"
      style="display:flex;gap:0;font-size:13px;border-bottom:1px solid var(--border);margin-bottom:16px;">
-  <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">🔐 Auth &amp; LLMs</span>
+  <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">🔐 Auth &amp; Skills</span>
   <span style="padding:8px 14px;color:var(--muted);">Apariencia</span>
   <span style="padding:8px 14px;color:var(--muted);">Refresh global</span>
-  <span style="padding:8px 14px;color:var(--muted);">Skills registry</span>
 </div>
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -97,7 +74,6 @@
             data-testid="connected-badge">● Conectado</span>
     </div>
 
-    {# Current user card ---------------------------------------------------- #}
     <div data-testid="user-card"
          style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;display:flex;align-items:center;gap:12px;">
       <div style="width:40px;height:40px;border-radius:50%;background:var(--card);border:1px solid var(--border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--fg);font-weight:600;flex-shrink:0;">
@@ -113,9 +89,6 @@
           {{ user_display_name | default('') }}{% if user_display_name %} · {% endif %}scopes: <code>repo, read:user</code>
         </div>
       </div>
-      {# Disconnect clears OAuth tokens + config auth.mode. The button is
-         a real form so the user gets the same redirect-after-save UX as
-         Guardar Auth / Guardar LLM. #}
       <form method="post" action="/settings/auth/disconnect" style="margin:0">
         <button type="submit" data-testid="disconnect-btn"
                 style="background:var(--card);color:var(--danger);border:1px solid var(--danger);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
@@ -124,21 +97,11 @@
       </form>
     </div>
 
-    {# Auth form wraps the PAT block + OAuth block so a future edit could
-       post through the existing /settings/auth/save route. The placeholder
-       buttons below are type="button" so they don't submit prematurely. #}
     <form method="post" action="/settings/auth/save" data-testid="auth-form">
-      {# PAT input + OAuth credentials are kept as hidden inputs so the
-         persistence route stays in sync with the current chip state. An
-         empty value here is a no-op (see _persist_auth_keys). #}
       <input type="hidden" name="github_token" value="{{ settings.github_token or '' }}">
       <input type="hidden" name="github_oauth_client_id" value="{{ settings.github_oauth_client_id or '' }}">
       <input type="hidden" name="github_oauth_client_secret" value="{{ settings.github_oauth_client_secret or '' }}">
 
-      {# Editable PAT input — replacing the previous "only a chip" approach
-         so the form actually saves when the user changes the token. The
-         placeholder shows the last 4 so the user can confirm they're not
-         about to overwrite an existing valid token by accident. #}
       {% if auth_mode == 'pat' %}
       <div style="margin-bottom:14px;">
         <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
@@ -155,8 +118,6 @@
       </div>
       {% endif %}
 
-      {# Editable OAuth credentials — visible inputs that submit alongside
-         the radio. #}
       {% if auth_mode == 'oauth' %}
       <div style="margin-bottom:14px;display:grid;gap:10px;">
         <div>
@@ -187,7 +148,6 @@
         </button>
       </div>
 
-      {# Mode selector ---------------------------------------------------- #}
       <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
         Modo de autenticación
       </label>
@@ -214,7 +174,6 @@
         </label>
       </div>
 
-      {# PAT config block — only visible when PAT mode is selected. #}
       {% if auth_mode == 'pat' %}
       <div data-testid="pat-config"
            style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;">
@@ -229,10 +188,6 @@
           <span data-testid="pat-token-display">ghp_••••••••••••••••••••••••••••••••••••••••{{ token_last4 }}</span>
         </div>
         <div style="display:flex;gap:6px;">
-          {# "Reemplazar token" is a UX cue pointing at the editable
-             input above — a small anchor that focuses the input and
-             scrolls to it, so the user has a single click path from
-             the chip to the edit field. #}
           <form method="post" action="/settings/auth/test" style="margin:0">
             <button type="submit"
                     style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
@@ -251,8 +206,6 @@
       </div>
       {% endif %}
 
-      {# OAuth hint — always visible per task spec (mock shows it even when
-         PAT is selected). Dashed border signals "secondary / informational". #}
       <div data-testid="oauth-hint"
            style="background:var(--bg-secondary);border:1px dashed var(--border);border-radius:6px;padding:10px 12px;color:var(--muted);font-size:12px;line-height:1.5;">
         <strong style="color:var(--fg);">Si elegís OAuth</strong> necesitás registrar tu propia GitHub App
@@ -263,180 +216,89 @@
   </div>
 
   {# ========================================================================
-     RIGHT — LLM / Agent settings card
+     RIGHT — Skills registry + per-skill prompts editor
+     v1.3.0: replaces the LLM card. Three prompt slots per skill
+     (review / post_review / check_resolved), each a textarea the user
+     can edit and save in bulk via /settings/skills.
      ======================================================================== #}
-  <div class="card" data-testid="llm-card">
+  <div class="card" data-testid="skills-card">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
-      <span style="font-size:18px;">🤖</span>
-      <strong style="color:var(--fg);font-size:15px;">LLM / Agent para reviews</strong>
+      <span style="font-size:18px;">🎯</span>
+      <strong style="color:var(--fg);font-size:15px;">Skills &amp; prompts</strong>
+      <span data-testid="skills-count" style="margin-left:auto;color:var(--muted);font-size:11px;">
+        {{ enabled_skills | length }} configuradas
+      </span>
     </div>
 
-    {# LLM form wraps the provider selector + active provider config so the
-         existing /settings/llm/save persistence route stays wired. #}
-    <form method="post" action="/settings/llm/save" data-testid="llm-form">
-      {# Flat mirror inputs keep the persistence helper's contract — see
-         _persist_llm_keys for the empty-value-is-noop semantics. #}
-      <input type="hidden" name="anthropic_api_key" value="{{ settings.llm.anthropic.api_key or '' }}">
-      <input type="hidden" name="openai_api_key"     value="{{ settings.llm.openai.api_key or '' }}">
-      <input type="hidden" name="ollama_base_url"    value="{{ settings.llm.ollama.base_url or '' }}">
+    <p style="margin:0 0 14px 0;color:var(--muted);font-size:12px;line-height:1.5;">
+      Cada skill define 3 prompts:
+      <strong style="color:var(--accent);">review</strong> (análisis del diff),
+      <strong style="color:var(--accent);">post_review</strong> (resumen del output) y
+      <strong style="color:var(--accent);">check_resolved</strong> (verificar si los comentarios fueron resueltos).
+      Los placeholders <code>{title}</code>, <code>{body}</code>, <code>{author}</code>, <code>{diff}</code>,
+      <code>{findings}</code> y <code>{mode_intro}</code> se rellenan automáticamente.
+    </p>
 
-      {# Editable API key inputs per provider. Hidden "_edit" mirrors on
-         submit keeps the original semantics — empty edit = no change. #}
-      <div style="display:grid;gap:10px;margin-bottom:14px;">
-        <div>
-          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Anthropic API key</label>
-          <input name="anthropic_api_key_edit" type="password"
-                 placeholder="sk-ant-…{% if anthropic_key_last4 %}(actual termina en ...{{ anthropic_key_last4 }}){% endif %}"
-                 autocomplete="off"
-                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
-        </div>
-        <div>
-          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">OpenAI API key</label>
-          <input name="openai_api_key_edit" type="password"
-                 placeholder="sk-…(dejá en blanco para no cambiar)"
-                 autocomplete="off"
-                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
-        </div>
-        <div>
-          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Ollama base URL</label>
-          <input name="ollama_base_url_edit"
-                 value="{{ settings.llm.ollama.base_url or '' }}"
-                 placeholder="http://localhost:11434"
-                 style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:12px;">
-        </div>
-      </div>
+    <form method="post" action="/settings/skills" data-testid="skills-form">
+      {% if enabled_skills %}
+        {% for skill in enabled_skills %}
+        <details open data-testid="skill-row-{{ skill.name }}"
+                 style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:10px;">
+          <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--fg);list-style:none;display:flex;align-items:center;gap:8px;">
+            <input type="checkbox"
+                   name="skill.{{ skill.name }}.enabled"
+                   {% if skill.enabled %}checked{% endif %}
+                   style="margin:0;">
+            <span>{{ skill.name }}</span>
+            <span style="color:var(--muted);font-weight:400;font-size:11px;flex:1;">{{ skill.description }}</span>
+            <span style="color:var(--muted);font-size:10px;">▾</span>
+          </summary>
+          <input type="hidden" name="skill.{{ skill.name }}.name" value="{{ skill.name }}">
+          <input type="hidden" name="skill.{{ skill.name }}.cli_flag" value="{{ skill.cli_flag }}">
+          <input type="hidden" name="skill.{{ skill.name }}.description" value="{{ skill.description }}">
+          <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px;">
+            {% for slot in prompt_slots %}
+            <div>
+              <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
+                {{ slot.replace('_', ' ') }}
+              </label>
+              <textarea name="skill.{{ skill.name }}.prompt.{{ slot }}"
+                        data-testid="skill-{{ skill.name }}-prompt-{{ slot }}"
+                        style="width:100%;min-height:90px;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 10px;border-radius:4px;font-family:monospace;font-size:12px;box-sizing:border-box;resize:vertical;">{{ skill.prompts.get(slot, '') }}</textarea>
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      {% else %}
+        <p style="color:var(--muted);font-size:12px;">0 skills configuradas. Creá un bloque <code>skills:</code> en <code>config.yaml</code> o reinstalá la app para obtener los defaults.</p>
+      {% endif %}
 
-      <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
-        <button type="submit"
+      <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px;">
+        <button type="submit" data-testid="save-skills-btn"
                 style="background:var(--success);color:#fff;border:0;padding:8px 18px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
-          Guardar LLM
+          Guardar skills
         </button>
       </div>
-
-      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
-        Provider por defecto
-      </label>
-      <select data-testid="provider-select" name="provider"
-              style="width:100%;background:var(--card);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-size:13px;margin-bottom:14px;">
-        <option value="anthropic" {% if settings.llm.default_provider == 'anthropic' %}selected{% endif %}>Anthropic (Claude)</option>
-        <option value="openai"    {% if settings.llm.default_provider == 'openai'    %}selected{% endif %}>OpenAI (Codex / GPT)</option>
-        <option value="mavis"     {% if settings.llm.default_provider == 'mavis'     %}selected{% endif %}>MiniMax Code (Mavis)</option>
-        <option value="ollama"    {% if settings.llm.default_provider == 'ollama'    %}selected{% endif %}>Ollama (local)</option>
-      </select>
-
-      {# Active provider config — only the row matching default_provider
-         is expanded. The other three render as collapsed <details>. #}
-      {% if settings.llm.default_provider == 'anthropic' %}
-      <div data-testid="anthropic-config"
-           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-          <strong style="color:var(--fg);font-size:13px;">Anthropic</strong>
-          <span class="badge badge-success" style="font-size:10px;">✓ configurado</span>
-        </div>
-        <div style="margin-bottom:10px;">
-          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">API key</label>
-          <div data-testid="anthropic-key-chip"
-               style="background:var(--card);border:1px solid var(--border);border-radius:4px;padding:8px 10px;font-family:monospace;font-size:12px;color:var(--accent);">
-            <span>sk-ant-•••••••••••••••••••••••••••••••{{ anthropic_key_last4 }}</span>
-          </div>
-          <div style="color:var(--muted);font-size:11px;margin-top:4px;">
-            en <code>.env</code> como <code>TOWERWATCH_ANTHROPIC_API_KEY</code>
-          </div>
-        </div>
-        <div style="margin-bottom:10px;">
-          <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">Modelo default</label>
-          <select name="anthropic_model"
-                  style="width:100%;background:var(--card);color:var(--fg);border:1px solid var(--border);padding:6px 10px;border-radius:4px;font-size:12px;">
-            <option value="claude-3-5-sonnet-latest" {% if settings.llm.anthropic.model == 'claude-3-5-sonnet-latest' %}selected{% endif %}>claude-3-5-sonnet-latest (recomendado)</option>
-            <option value="claude-3-5-haiku-latest"  {% if settings.llm.anthropic.model == 'claude-3-5-haiku-latest'  %}selected{% endif %}>claude-3-5-haiku-latest (rápido/barato)</option>
-            <option value="claude-3-opus-latest"     {% if settings.llm.anthropic.model == 'claude-3-opus-latest'     %}selected{% endif %}>claude-3-opus-latest (máxima calidad)</option>
-          </select>
-        </div>
-        <form method="post" action="/settings/llm/test" style="margin:0">
-          <button type="submit"
-                  style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
-            🔄 Probar conexión
-          </button>
-        </form>
-      </div>
-      {% else %}
-      {# When Anthropic isn't the default, still show the Anthropic card so
-         the user can see/edit it — but in a collapsed <details> summary
-         matching the "Other providers" section below. #}
-      {% endif %}
-
-      {# Other-provider summaries — always rendered so the user can see the
-         full provider list. The active provider's row above already
-         shows its full config; the others collapse to one-line status. #}
-      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">
-        <details {% if settings.llm.default_provider == 'openai' %}open{% endif %}>
-          <summary style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--muted);list-style:none;">
-            <span style="color:var(--fg);">▸ OpenAI (Codex / GPT)</span>
-            <span style="margin-left:8px;font-size:10px;color:var(--muted);">no configurado</span>
-          </summary>
-        </details>
-        <details {% if settings.llm.default_provider == 'mavis' %}open{% endif %}>
-          <summary style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--muted);list-style:none;">
-            <span style="color:var(--fg);">▸ MiniMax Code (Mavis)</span>
-            <span style="margin-left:8px;font-size:10px;color:var(--success);">configurado</span>
-          </summary>
-        </details>
-        <details {% if settings.llm.default_provider == 'ollama' %}open{% endif %}>
-          <summary style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 12px;cursor:pointer;font-size:12px;color:var(--muted);list-style:none;">
-            <span style="color:var(--fg);">▸ Ollama (local)</span>
-            <span style="margin-left:8px;font-size:10px;color:var(--muted);">auto-detectado en localhost:11434</span>
-          </summary>
-        </details>
-      </div>
     </form>
-
-    {# Skills registry preview (blue-tinted, lives outside the LLM form so
-       it doesn't accidentally submit on save). #}
-    <div data-testid="skills-registry-preview"
-         style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:6px;padding:12px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-        <strong style="color:var(--fg);font-size:13px;">🎯 Skills registry</strong>
-        <span data-testid="skills-count" style="color:var(--muted);font-size:11px;">
-          {{ enabled_skills | length }} configuradas
-        </span>
-      </div>
-      {% if enabled_skills %}
-      <div style="font-size:12px;color:var(--fg);display:flex;flex-direction:column;gap:6px;">
-        {% for skill in enabled_skills %}
-        <div style="display:flex;justify-content:space-between;padding:6px 10px;background:var(--card);border-radius:4px;">
-          <span>
-            <strong style="color:var(--success);" data-testid="skill-name">{{ skill.name }}</strong>
-            {% if skill.description %} · <span style="color:var(--muted);">{{ skill.description }}</span>{% endif %}
-          </span>
-          <span style="color:var(--muted);font-size:11px;">enabled</span>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div style="font-size:12px;color:var(--muted);">0 configuradas.</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px;">
-        Editá <code>config.yaml</code> y agregá una sección <code>skills:</code> con
-        <code>name</code>/<code>enabled</code>/<code>description</code>/<code>cli_flag</code>.
-      </div>
-      {% endif %}
-      <div style="margin-top:10px;font-size:11px;color:var(--muted);">
-        Configuración detallada de skills (descripciones, flags, modelos por skill) en la pestaña
-        <strong style="color:var(--accent);">Skills registry</strong>.
-      </div>
-    </div>
   </div>
 </div>
 
 {# ---------------------------------------------------------------------------
-   Bottom save bar — autosave indicator + restore-defaults that wipes
-   .env and config.yaml back to the empty-template state.
+   Bottom save bar — restore-defaults that wipes .env and config.yaml back
+   to the empty-template state. v1.3.0: removed the LLM-autosave indicator
+   since there's no LLM block to autosave.
    --------------------------------------------------------------------------- #}
 <div data-testid="save-bar"
      style="margin-top:16px;padding:12px 20px;border-top:1px solid var(--border);background:var(--bg-secondary);border-radius:6px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted);">
   <span>Cambios se guardan automáticamente al .env / config.yaml</span>
   <div style="display:flex;gap:8px;align-items:center;">
-    {% if request.query_params.get('ok') %}
-      <span style="color:var(--success);" data-testid="saved-indicator">✓ {{ {'auth': 'Auth guardado', 'llm': 'LLM guardado', 'defaults': 'Defaults restaurados'}.get(request.query_params.get('ok'), 'Guardado') }}</span>
+    {% if request.query_params.get('ok') == 'auth' %}
+      <span style="color:var(--success);" data-testid="saved-indicator">✓ Auth guardado</span>
+    {% elif request.query_params.get('ok') == 'skills' %}
+      <span style="color:var(--success);" data-testid="saved-indicator">✓ Skills guardadas</span>
+    {% elif request.query_params.get('ok') == 'defaults' %}
+      <span style="color:var(--success);" data-testid="saved-indicator">✓ Defaults restaurados</span>
     {% else %}
       <span style="color:var(--muted);" data-testid="saved-indicator">sin cambios pendientes</span>
     {% endif %}

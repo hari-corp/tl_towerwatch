@@ -58,7 +58,7 @@ def test_scheduler_persists_last_fetch_error_on_sync_failure(env, tmp_path):
         "tl_towerwatch.scheduler.sync_repo",
         side_effect=RuntimeError("boom"),
     ):
-        sched._tick(db, _StubGH(), _StubLLM(), last_run={})
+        sched._tick(db, _StubGH(), last_run={})
 
     with db.session() as s:
         repo = s.get(Repo, repo_id)

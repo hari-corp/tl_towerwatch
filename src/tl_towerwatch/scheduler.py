@@ -8,12 +8,14 @@ from tl_towerwatch.config import Settings
 from tl_towerwatch.db.database import Database, engine_from_settings
 from tl_towerwatch.db.models import Repo
 from tl_towerwatch.github.client import GitHubClient
-from tl_towerwatch.llm import get_provider
 from tl_towerwatch.services.pull_requests import sync_repo
 from tl_towerwatch.services.repos import list_repos
 
 
 class RefreshScheduler:
+    """Background refresh loop. v1.3.0: no longer takes an LLM provider — the
+    sync path is fully local (PR metadata, reviews, comments)."""
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._stop = threading.Event()
@@ -31,16 +33,14 @@ class RefreshScheduler:
     def _loop(self) -> None:
         db = engine_from_settings(self._settings)
         gh = GitHubClient(token=resolve_token(self._settings))
-        llm = get_provider(self._settings)
         last_run: dict[int, float] = {}
         while not self._stop.wait(15):
-            self._tick(db, gh, llm, last_run)
+            self._tick(db, gh, last_run)
 
     def _tick(
         self,
         db: Database,
         gh: GitHubClient,
-        llm,
         last_run: dict[int, float],
     ) -> None:
         """Run one iteration of the refresh loop: for each enabled repo whose
@@ -57,7 +57,7 @@ class RefreshScheduler:
             if now - last_run.get(repo.id, 0) < interval:
                 continue
             try:
-                sync_repo(db, gh, repo, llm=llm, settings=self._settings)
+                sync_repo(db, gh, repo)
             except Exception as e:  # noqa: BLE001 — top-level refresh error handler
                 with db.session() as s:
                     r = s.get(Repo, repo.id)
