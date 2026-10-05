@@ -479,24 +479,45 @@ def repos_page(request: Request):
     token = _safe_resolve_token(settings)
     if isinstance(token, RedirectResponse):
         return token
-    # Cheap rate-limit probe for the banner.
+    # Cheap rate-limit probe for the banner. We hit GitHub's
+    # /rate_limit endpoint via the proper client method (not the
+    # internal ``_client``) so the auth + response shape are kept in
+    # one place and a failure surfaces cleanly to the UI instead of
+    # rendering a hard-coded "5,000 restantes".
     rl: dict | None = None
     try:
         with GitHubClient(token=token) as gh:
-            r = gh._client.get("/rate_limit")
-            if r.status_code == 200:
-                core = r.json().get("resources", {}).get("core", {})
-                remaining = int(core.get("remaining", 0) or 0)
-                reset = int(core.get("reset", 0) or 0)
-                pct = max(0.0, min(100.0, remaining / 5000.0 * 100.0))
-                rl = {
-                    "remaining": remaining,
-                    "reset": reset,
-                    "width_pct": f"{pct:.0f}%",
-                    "reset_human": _humanize_reset(reset),
-                }
-    except Exception:
-        rl = None
+            rate = gh.get_rate_limit()
+            limit = rate.limit or 5000
+            remaining = max(0, min(limit, rate.remaining))
+            pct = (remaining / limit * 100.0) if limit else 0.0
+            rl = {
+                "limit": limit,
+                "remaining": remaining,
+                "reset": rate.reset,
+                "width_pct": f"{pct:.0f}%",
+                "reset_human": _humanize_reset(rate.reset),
+            }
+    except httpx.HTTPStatusError as e:
+        # Surface the failure reason so a 401/403 doesn't render as
+        # an empty banner — the user thinks the rate limit is fine.
+        rl = {
+            "limit": 0,
+            "remaining": 0,
+            "reset": 0,
+            "width_pct": "0%",
+            "reset_human": "—",
+            "error": f"HTTP{e.response.status_code}",
+        }
+    except Exception as e:
+        rl = {
+            "limit": 0,
+            "remaining": 0,
+            "reset": 0,
+            "width_pct": "0%",
+            "reset_human": "—",
+            "error": type(e).__name__,
+        }
     repo_rows = svc_list_repos(db)
     # Single grouped query: open PR count per repo (avoids N+1).
     open_counts: dict[int, int] = {}

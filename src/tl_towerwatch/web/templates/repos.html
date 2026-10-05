@@ -7,15 +7,26 @@
 </p>
 
 {% if rl %}
-<div style="background:var(--card);border:1px solid var(--border);border-left:3px solid var(--success);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:14px;gap:12px;flex-wrap:wrap;">
+<div data-testid="rate-limit-banner"
+     style="background:var(--card);border:1px solid var(--border);border-left:3px solid {% if rl.error %}var(--danger){% elif rl.remaining < rl.limit * 0.2 %}var(--danger){% elif rl.remaining < rl.limit * 0.5 %}var(--warning){% else %}var(--success){% endif %};border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:14px;gap:12px;flex-wrap:wrap;">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-    <span class="badge badge-success">● API OK</span>
+    {% if rl.error %}
+    <span class="badge badge-danger" data-testid="rate-limit-status">● API error</span>
+    <span style="color:var(--muted);">Rate limit GitHub:</span>
+    <span style="color:var(--danger);font-weight:600;" data-testid="rate-limit-value">probe falló ({{ rl.error }})</span>
+    {% else %}
+    <span class="badge badge-success" data-testid="rate-limit-status">● API OK</span>
     <span style="color:var(--muted);">Rate limit GitHub:</span>
     <div style="background:var(--bg-secondary);width:140px;height:8px;border-radius:4px;overflow:hidden;border:1px solid var(--border);">
-      <div style="background:linear-gradient(90deg,var(--success),#f1c40f,var(--danger));height:100%;width:{{ rl.width_pct }};border-radius:4px;"></div>
+      <div data-testid="rate-limit-bar"
+           style="background:linear-gradient(90deg,var(--success),#f1c40f,var(--danger));height:100%;width:{{ rl.width_pct }};border-radius:4px;"></div>
     </div>
-    <span style="color:var(--success);font-weight:600;">{{ "{:,}".format(rl.remaining) }} / 5,000 restantes</span>
+    <span data-testid="rate-limit-value"
+          style="color:{% if rl.remaining < rl.limit * 0.2 %}var(--danger){% elif rl.remaining < rl.limit * 0.5 %}var(--warning){% else %}var(--success){% endif %};font-weight:600;">
+      {{ "{:,}".format(rl.remaining) }} / {{ "{:,}".format(rl.limit) }} restantes
+    </span>
     <span style="color:var(--muted);">· resetea en {{ rl.reset_human }}</span>
+    {% endif %}
   </div>
   <div style="color:var(--muted);font-size:11px;">
     usuario: <strong style="color:var(--fg);">@{{ user_login }}</strong> (PAT)

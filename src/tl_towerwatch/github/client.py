@@ -70,6 +70,23 @@ class GitHubClient:
         d = self._check(self._client.get("/user"))
         return User(login=d["login"], avatar_url=d.get("avatar_url"), display_name=d.get("name"))
 
+    def get_rate_limit(self) -> RateLimit:
+        """Probe GitHub's rate-limit endpoint. Returns ``RateLimit``
+        with ``limit`` so the UI can render ``remaining / limit``
+        without hard-coding 5,000 (the default is 5,000 for PATs but
+        enterprise / OAuth flows can return different numbers)."""
+        d = self._check(self._client.get("/rate_limit"))
+        # GitHub returns both `resources.core` and `rate`; we read from
+        # `rate` because it's always present and matches the response
+        # semantics documented for the endpoint. Fall back to
+        # `resources.core` for older clients.
+        rate = d.get("rate") or d.get("resources", {}).get("core") or {}
+        return RateLimit(
+            limit=int(rate.get("limit", 0) or 0),
+            remaining=int(rate.get("remaining", 0) or 0),
+            reset=int(rate.get("reset", 0) or 0),
+        )
+
     def get_repo(self, owner: str, name: str) -> RepoMeta:
         d = self._check(self._client.get(f"/repos/{owner}/{name}"))
         return RepoMeta(owner=owner, name=name, full_name=d["full_name"], private=d["private"])

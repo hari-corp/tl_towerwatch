@@ -90,5 +90,13 @@ class CommitData:
 
 @dataclass
 class RateLimit:
-    remaining: int
-    reset: int
+    """Snapshot of GitHub's rate-limit window for the current token.
+
+    ``limit`` is the per-hour ceiling (5,000 for a PAT, but GitHub Apps
+    and enterprise tokens can return different numbers — read from the
+    response, never hard-coded). ``remaining`` is what's left in the
+    current window; ``reset`` is the unix timestamp when the window
+    rolls over."""
+    limit: int = 0
+    remaining: int = 0
+    reset: int = 0

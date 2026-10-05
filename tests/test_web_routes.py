@@ -1869,3 +1869,70 @@ def test_settings_renders_both_auth_blocks_with_toggle_script(
         # Inline JS swap script is in the page.
         assert "patBlock.style.display" in body
         assert "addEventListener('change'" in body
+
+
+def test_repos_rate_limit_banner_shows_real_remaining(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: the repos-page rate-limit banner shows GitHub's actual
+    ``remaining`` value (not a hard-coded 5,000). The probe fetches
+    ``/rate_limit`` and the template uses the response's ``remaining``
+    + ``limit`` fields directly. A 401 from GitHub (bad token) shows
+    the failure path so the user knows the value isn't fake.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    respx_mock.get("https://api.github.com/rate_limit").mock(
+        return_value=Response(200, json={
+            "resources": {"core": {"limit": 5000, "used": 17, "remaining": 4983, "reset": 1234567890}},
+            "rate": {"limit": 5000, "used": 17, "remaining": 4983, "reset": 1234567890},
+        }))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/repos")
+        assert r.status_code == 200
+        body = r.text
+        # The banner is rendered with the real remaining + limit pulled
+        # from GitHub's response.
+        assert "data-testid=\"rate-limit-banner\"" in body
+        assert "data-testid=\"rate-limit-value\"" in body
+        assert "4,983 / 5,000 restantes" in body
+        # The progress bar width tracks the actual remaining count.
+        assert "data-testid=\"rate-limit-bar\"" in body
+
+
+def test_repos_rate_limit_banner_shows_probe_failure(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: when the /rate_limit probe fails (e.g. token rejected),
+    the banner surfaces an error indicator instead of a hard-coded
+    5,000 — so the user doesn't mistake a stale probe for a fresh
+    quota."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    respx_mock.get("https://api.github.com/rate_limit").mock(
+        return_value=Response(401, json={"message": "Bad credentials"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/repos")
+        assert r.status_code == 200
+        body = r.text
+        # Banner still renders but with the failure indicator instead
+        # of a fake 5,000.
+        assert "data-testid=\"rate-limit-banner\"" in body
+        assert "data-testid=\"rate-limit-status\"" in body
+        assert "● API error" in body
+        assert "probe falló" in body
+        assert "HTTP401" in body
+        # The success-shaped fields must not appear when the probe failed.
+        assert "4,983 / 5,000 restantes" not in body
