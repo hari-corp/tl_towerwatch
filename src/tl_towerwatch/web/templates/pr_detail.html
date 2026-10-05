@@ -175,7 +175,13 @@
       {# Tab strip. Each tab posts to ``/pr/.../show-review-prompt`` and
          uses HTMX so only the body swaps in place — the rest of the page
          doesn't re-render. ``hx-target`` points at #prompt-body so the
-         swap is local. #}
+         swap is local.
+
+         v1.3.0: removed the ``hx-trigger="load"`` auto-fire. We don't
+         want to burn a GitHub API call (PR metadata + files) every
+         time the page loads — the user only needs the prompt when
+         they're actively going to use it. The body starts empty with
+         a "Render prompt" button so the first click is explicit. #}
       <div role="tablist"
            style="display:flex;gap:0;border-radius:5px;overflow:hidden;margin-bottom:12px;border:1px solid var(--border);font-size:12px;">
         {% set active_slot = request.query_params.get('prompt_slot', 'review') %}
@@ -222,18 +228,29 @@
       </div>
 
       <div id="prompt-body"
-           hx-post="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/show-review-prompt"
-           hx-vals='{"slot": "{{ active_slot }}", "mode": "{{ active_mode }}"}'
-           hx-trigger="load delay:50ms"
-           hx-swap="innerHTML"
            style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:10px;margin-bottom:10px;font-size:11px;max-height:420px;overflow:auto;">
-        <span style="color:var(--muted);">cargando prompt…</span>
+        <div data-testid="prompt-body-empty"
+             style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 8px;color:var(--muted);">
+          <span style="font-size:20px;">📋</span>
+          <span style="font-size:12px;">Elegí un tab (render / compare / check_resolved) y cliqueá para assemblar el prompt.</span>
+          <button type="button"
+                  data-testid="render-prompt-btn"
+                  hx-post="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/show-review-prompt"
+                  hx-vals='{"slot": "{{ active_slot }}", "mode": "{{ active_mode }}"}'
+                  hx-target="#prompt-body"
+                  hx-swap="innerHTML"
+                  hx-trigger="click"
+                  style="background:var(--accent);color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;">
+            ▶ Render {{ active_slot.replace('_', ' ') }}
+          </button>
+        </div>
       </div>
 
       <div style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:5px;padding:8px;font-size:11px;color:var(--muted);line-height:1.5;">
         💡 <strong style="color:var(--accent);">tip:</strong> edita el template en
         <a href="/settings" style="color:var(--accent);">/settings → Skills</a>
-        para customizar el prompt.
+        para customizar el prompt. El render hace una llamada a GitHub
+        para obtener el diff, así que solo se dispara cuando lo pedís.
       </div>
 
       <script>

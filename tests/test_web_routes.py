@@ -1466,6 +1466,19 @@ def test_pr_detail_renders_prompt_viewer(tmp_path, monkeypatch, respx_mock):
         # Prompt viewer with three slot tabs.
         assert "id=\"prompt-viewer\"" in body
         assert 'hx-post="/pr/acme/alpha/1/show-review-prompt"' in body
+        # v1.3.0: prompt body no longer auto-loads on page open. The
+        # viewer shows a placeholder + a "Render" button so the user
+        # explicitly triggers the GitHub fetch.
+        assert "data-testid=\"prompt-body-empty\"" in body
+        assert "data-testid=\"render-prompt-btn\"" in body
+        assert "Elegí un tab" in body
+        # And there's no `hx-trigger="load"` on the prompt-body div —
+        # otherwise we burn a rate-limited GET on every page load and
+        # the body gets stuck at "cargando prompt…" when auth fails.
+        # (We check the prompt-body div specifically, not the page in
+        # general, since HTMX's `hx-trigger="load"` is also used to
+        # bootstrap other widgets.)
+        assert 'id="prompt-body"' in body
         # Run-review widget is gone (no agent select, no /run-review form).
         assert "/run-review" not in body
         assert "Agente runner" not in body
