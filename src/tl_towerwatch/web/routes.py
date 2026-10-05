@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -154,16 +155,30 @@ def _redirect_on_auth_error(e: RuntimeError) -> RedirectResponse:
 
 
 def _safe_resolve_token(settings: Settings) -> str | RedirectResponse:
-    """Resolve the GitHub token, returning a redirect to /settings on auth
+    """Resolve the GitHub token, returning a redirect on auth or network
     failure. Routes that talk to GitHub should call this instead of
     ``resolve_token`` directly so a 401 / missing-credentials state ends in
-    a friendly redirect instead of a 500. On success returns the token
-    string; on auth failure returns a ``RedirectResponse`` the route
-    should propagate."""
+    a friendly redirect instead of a 500.
+
+    v1.3.x: widened the catch from ``RuntimeError`` to ``Exception`` so
+    transient network failures (DNS, TLS, timeout) during the
+    ``GET /user`` token-validation call also redirect cleanly. Those used
+    to escape as 500s, which is a problem on the reply routes where the
+    user has just typed a comment — losing their input to a traceback
+    is a poor experience.
+    """
     try:
         return resolve_token(settings)
     except RuntimeError as e:
         return _redirect_on_auth_error(e)
+    except Exception as e:
+        # Network errors / timeouts / TLS issues → bounce to /settings
+        # with a generic token-validation error so the user can re-enter
+        # the token or retry once their network recovers.
+        return RedirectResponse(
+            f"/settings?error=github_unreachable&reason={type(e).__name__}",
+            status_code=303,
+        )
 
 
 def _theme(request: Request) -> str:
@@ -705,7 +720,9 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
         u = user_by_login.get(r.reviewer_login)
         r.reviewer_avatar_url = getattr(u, "avatar_url", None)
         r.reviewer_display_name = getattr(u, "display_name", None)
-    reply_ok = request.query_params.get("ok") == "reply"
+    reply_ok = request.query_params.get("ok") in ("reply", "reply_stale")
+    reply_ok_partial = request.query_params.get("ok") == "reply_stale"
+    reply_stale_reason = request.query_params.get("reason") if reply_ok_partial else ""
     error_param = request.query_params.get("error", "")
     return templates.TemplateResponse(request, "pr_detail.html",
         {"nav": "home", "theme": _theme(request),
@@ -725,6 +742,8 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
          "prompt_slots": PROMPT_SLOTS,
          "owner": owner, "name": name,
          "reply_ok": reply_ok,
+         "reply_ok_partial": reply_ok_partial,
+         "reply_stale_reason": reply_stale_reason,
          "reply_error": error_param,
          **_user_context(db, "dimh")})
 
@@ -850,14 +869,38 @@ def pr_reply_issue_comment(owner: str, name: str, number: int,
         )).scalar_one()
     try:
         with GitHubClient(token=token) as gh:
-            post_issue_comment_reply(
+            posted = post_issue_comment_reply(
                 db, gh, repo, number, body_text,
                 in_reply_to_github_id=in_reply_to_id,
             )
+    except httpx.HTTPStatusError as e:
+        # GitHub rejected the reply (401 bad token, 403 forbidden /
+        # missing write scope, 422 invalid body, 404 on archived repo…).
+        # Surface the status + GitHub's own error message so the user
+        # knows exactly what to fix.
+        body_text = ""
+        try:
+            body_text = (e.response.json().get("message") or "")[:140]
+        except Exception:
+            pass
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=reply_failed&reason="
+            f"HTTP{e.response.status_code}&msg={body_text}",
+            status_code=303,
+        )
     except Exception as e:
         return RedirectResponse(
             f"/pr/{owner}/{name}/{number}?error=reply_failed&reason="
             f"{type(e).__name__}",
+            status_code=303,
+        )
+    # Reply succeeded on GitHub. If the post-reply sync failed, surface
+    # that as a separate banner so they know their comment went through
+    # but the local cache is stale.
+    if posted.get("_sync_error"):
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?ok=reply_stale&reason="
+            f"{posted['_sync_error']}",
             status_code=303,
         )
     return RedirectResponse(
@@ -895,13 +938,30 @@ def pr_reply_review_comment(owner: str, name: str, number: int,
         )).scalar_one()
     try:
         with GitHubClient(token=token) as gh:
-            post_review_comment_reply(
+            posted = post_review_comment_reply(
                 db, gh, repo, number, parent_id, body_text,
             )
+    except httpx.HTTPStatusError as e:
+        body_text = ""
+        try:
+            body_text = (e.response.json().get("message") or "")[:140]
+        except Exception:
+            pass
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=reply_failed&reason="
+            f"HTTP{e.response.status_code}&msg={body_text}",
+            status_code=303,
+        )
     except Exception as e:
         return RedirectResponse(
             f"/pr/{owner}/{name}/{number}?error=reply_failed&reason="
             f"{type(e).__name__}",
+            status_code=303,
+        )
+    if posted.get("_sync_error"):
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?ok=reply_stale&reason="
+            f"{posted['_sync_error']}",
             status_code=303,
         )
     return RedirectResponse(

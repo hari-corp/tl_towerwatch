@@ -1733,3 +1733,97 @@ def test_pr_reply_empty_body_redirects_with_error(
                    follow_redirects=False)
         assert r.status_code == 303
         assert "error=empty_reply" in r.headers["location"]
+
+
+def test_pr_reply_issue_route_handles_github_403(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: when GitHub returns 403 (token lacks write scope), the
+    route bounces back with a clear ``error=reply_failed&reason=HTTP403``
+    banner so the user knows the token needs a write scope on the repo.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    respx_mock.post("https://api.github.com/repos/acme/alpha/issues/1/comments").mock(
+        return_value=Response(
+            403, json={"message": "Resource not accessible by integration"},
+        ))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/reply-issue",
+                   data={"body": "thanks!"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        loc = r.headers["location"]
+        assert "error=reply_failed" in loc
+        assert "HTTP403" in loc
+        # GitHub's own message bubbles up so the user knows what's wrong.
+        from urllib.parse import unquote
+        assert "Resource not accessible" in unquote(loc)
+
+
+def test_pr_reply_issue_route_handles_network_error(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: transient network failure during token validation
+    redirects to /settings?error=github_unreachable instead of 500."""
+    import httpx
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    # Simulate a ConnectError on the user-info endpoint so the
+    # resolve_token call propagates a non-RuntimeError exception.
+    respx_mock.get("https://api.github.com/user").mock(
+        side_effect=httpx.ConnectError("no DNS"))
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/reply-issue",
+                   data={"body": "thanks!"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert "error=github_unreachable" in r.headers["location"]
+        assert "ConnectError" in r.headers["location"]

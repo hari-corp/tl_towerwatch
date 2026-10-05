@@ -199,10 +199,19 @@ def post_issue_comment_reply(
     refreshes the PR's comment cache so the new comment shows up in the
     UI. When ``in_reply_to_github_id`` is supplied, the local row is
     threaded under the parent so the timeline renders as a nested reply.
+
+    The post-reply refresh is best-effort: a transient failure here
+    means the reply is on GitHub but not in our local cache, which the
+    next sync will catch up. The route surfaces the partial success via
+    the ``?error=reply_sync_failed`` banner rather than as a full
+    failure.
     """
     posted = gh.post_issue_comment(repo.owner, repo.name, number, body)
-    # Refresh so the new comment lands in the local cache.
-    sync_one_pr(db, gh, repo, number)
+    sync_error: str | None = None
+    try:
+        sync_one_pr(db, gh, repo, number)
+    except Exception as e:  # noqa: BLE001 — partial-success path
+        sync_error = type(e).__name__
     # If the user posted a threaded reply, patch the local row so the
     # UI threads it without waiting for the next refresh to round-trip.
     if in_reply_to_github_id and posted.get("id"):
@@ -214,6 +223,10 @@ def post_issue_comment_reply(
             ).scalar_one_or_none()
             if row is not None:
                 row.in_reply_to_id = in_reply_to_github_id
+    if sync_error:
+        # Surface partial success to the caller. The reply landed on
+        # GitHub; only the cache refresh failed.
+        return {**posted, "_sync_error": sync_error}
     return posted
 
 
@@ -225,10 +238,13 @@ def post_review_comment_reply(
     posted = gh.post_review_comment_reply(
         repo.owner, repo.name, number, parent_github_id, body
     )
-    sync_one_pr(db, gh, repo, number)
-    # The inline-comments endpoint already sets in_reply_to_id on the
-    # server-side response — the refresh re-pulls it. No local patch
-    # needed here.
+    sync_error: str | None = None
+    try:
+        sync_one_pr(db, gh, repo, number)
+    except Exception as e:  # noqa: BLE001 — partial-success path
+        sync_error = type(e).__name__
+    if sync_error:
+        return {**posted, "_sync_error": sync_error}
     return posted
 
 
