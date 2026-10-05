@@ -319,7 +319,8 @@
       renderea el prompt de análisis (con el diff completo), <strong style="color:var(--accent);">post_review</strong>
       resume los hallazgos que generaste, y <strong style="color:var(--accent);">check_resolved</strong>
       verifica si los comentarios fueron resueltos en commits posteriores.
-      Los placeholders <code>{title}</code>, <code>{body}</code>, <code>{author}</code>,
+      Los placeholders <code>{number}</code>, <code>{repo}</code>, <code>{title}</code>,
+      <code>{body}</code>, <code>{author}</code>, <code>{head_sha}</code>,
       <code>{diff}</code>, <code>{files}</code>, <code>{findings}</code> y
       <code>{mode_intro}</code> se rellenan automáticamente cuando rendereás el prompt.
     </p>
@@ -355,9 +356,12 @@
           📚 Placeholders disponibles en los templates ▾
         </summary>
         <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:10px 12px;margin-top:8px;font-size:12px;color:var(--muted);line-height:1.6;">
+          <code style="color:var(--fg);">{number}</code> — número del PR (e.g. <code>42</code>)<br>
+          <code style="color:var(--fg);">{repo}</code> — repo del PR (e.g. <code>acme/billing</code>)<br>
           <code style="color:var(--fg);">{title}</code> — título del PR<br>
           <code style="color:var(--fg);">{body}</code> — descripción pública del PR (de GitHub)<br>
           <code style="color:var(--fg);">{author}</code> — login del autor del PR<br>
+          <code style="color:var(--fg);">{head_sha}</code> — SHA del head commit<br>
           <code style="color:var(--fg);">{diff}</code> — diff completo, truncado a 2000 líneas / 30 archivos<br>
           <code style="color:var(--fg);">{files}</code> — lista de archivos modificados con +/- stats<br>
           <code style="color:var(--fg);">{findings}</code> — salida del step anterior (para <code>post_review</code> y <code>check_resolved</code>)<br>

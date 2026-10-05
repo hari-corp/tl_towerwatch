@@ -1410,6 +1410,10 @@ def test_settings_renders_no_llm_block(tmp_path, monkeypatch, respx_mock):
         assert "data-testid=\"prompts-form\"" in body
         for slot in ("review", "post_review", "check_resolved"):
             assert f'prompt.{slot}"' in body or f"prompt.{slot}\"" in body
+        # v1.3.x: the {number} and {repo} placeholders are listed in the
+        # cheat sheet so the user knows they're available.
+        assert "{number}" in body
+        assert "{repo}" in body
 
 
 def test_pr_detail_renders_prompt_viewer(tmp_path, monkeypatch, respx_mock):

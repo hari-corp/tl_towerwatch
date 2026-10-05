@@ -369,6 +369,38 @@ def test_assemble_review_prompt_uses_user_prompts(tmp_path, monkeypatch):
 
 
 @respx.mock
+def test_assemble_review_prompt_fills_number_and_repo(tmp_path, monkeypatch):
+    """v1.3.x: ``{number}`` and ``{repo}`` are filled from the GitHub
+    payload + the ``owner/name`` arguments so the user can reference
+    them in the prompt template.
+    """
+    from tl_towerwatch.config_io import save_config_yaml
+    from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
+    save_config_yaml(tmp_path / "config.yaml", {"prompts": {
+        "review": "PR #{number} in {repo}: {title}",
+        "post_review": "",
+        "check_resolved": "",
+    }})
+    respx.get("https://api.github.com/repos/o/n/pulls/42").mock(return_value=Response(
+        200, json={"number": 42, "title": "feat", "body": "",
+                   "user": {"login": "a"}, "state": "open", "draft": False,
+                   "head": {"sha": "s1"}, "base": {"ref": "main"},
+                   "html_url": "u",
+                   "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z",
+                   "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/42/files").mock(
+        return_value=Response(200, json=[]))
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    with GitHubClient(token="x") as gh:
+        out = assemble_review_prompt(
+            gh, data_dir=tmp_path, owner="o", name="n", number=42,
+            slot="review", mode="fresh",
+        )
+    assert "PR #42 in o/n: feat" in out
+
+
+@respx.mock
 def test_save_manual_description_persists(tmp_path):
     from tl_towerwatch.db.models import PullRequest
     db = _setup(tmp_path)

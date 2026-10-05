@@ -24,7 +24,7 @@ def _default_prompts() -> dict[str, str]:
     """
     return {
         "review": (
-            "You are doing a focused code review of the diff below.\n"
+            "You are doing a focused code review of PR #{number} in {repo}.\n"
             "Look for correctness, edge cases, security, performance, "
             "and readability issues. Output a numbered list of findings, "
             "each citing the file + line. Be specific and actionable.\n\n"
@@ -35,18 +35,18 @@ def _default_prompts() -> dict[str, str]:
         ),
         "post_review": (
             "You are summarising the review findings below into a short "
-            "report for the PR author. Categorise each finding (must-fix / "
-            "nice-to-have / question), drop duplicates, and write a one-line "
-            "summary at the top.\n\n"
+            "report for the PR author of #{number} in {repo}. Categorise "
+            "each finding (must-fix / nice-to-have / question), drop "
+            "duplicates, and write a one-line summary at the top.\n\n"
             "PR title: {title}\n\n"
             "Findings:\n{findings}"
         ),
         "check_resolved": (
             "You are checking whether the author has addressed every review "
-            "comment on the PR. For each previous finding below, mark it "
-            "'resolved' (the PR addresses it) or 'pending' (still relevant). "
-            "If the author added new code that supersedes the concern, mark "
-            "it 'resolved' and cite the new commit.\n\n"
+            "comment on PR #{number} in {repo}. For each previous finding "
+            "below, mark it 'resolved' (the PR addresses it) or 'pending' "
+            "(still relevant). If the author added new code that supersedes "
+            "the concern, mark it 'resolved' and cite the new commit.\n\n"
             "PR title: {title}\n\n"
             "Previous findings:\n{findings}\n\n"
             "Latest diff (so you can compare to the comments):\n{diff}"
