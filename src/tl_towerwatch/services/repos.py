@@ -60,6 +60,53 @@ def set_repo_enabled(db: Database, owner: str, name: str, enabled: bool) -> None
             raise KeyError(f"{owner}/{name} not registered")
         r.enabled = 1 if enabled else 0
 
+
+def update_repo_config(
+    db: Database,
+    owner: str,
+    name: str,
+    *,
+    scope: str,
+    refresh_interval_seconds: int,
+    allowed_authors: list[str],
+    is_self: bool,
+) -> Repo:
+    """Update the per-repo config (scope, refresh interval, allowed
+    authors, dogfooding flag). Returns the refreshed row.
+
+    Validation: scope must be one of the four known values; refresh
+    interval is clamped to ``[60, 86400]`` (1 minute to a day) to keep
+    the scheduler sane. Authors are normalised through
+    ``normalize_authors`` so the JSON column stays clean.
+    """
+    valid_scopes = ("all", "mine", "mine_and_review", "review")
+    if scope not in valid_scopes:
+        scope = "mine_and_review"
+    if not isinstance(refresh_interval_seconds, int) or refresh_interval_seconds < 60:
+        refresh_interval_seconds = 60
+    if refresh_interval_seconds > 86400:
+        refresh_interval_seconds = 86400
+    with db.session() as s:
+        r = s.execute(
+            select(Repo).where(Repo.owner == owner, Repo.name == name)
+        ).scalar_one_or_none()
+        if r is None:
+            raise KeyError(f"{owner}/{name} not registered")
+        r.scope = scope
+        r.refresh_interval_seconds = refresh_interval_seconds
+        r.is_self = 1 if is_self else 0
+        r.allowed_authors_json = json.dumps(normalize_authors(allowed_authors))
+        s.flush()
+        return r
+
+
+def get_repo(db: Database, owner: str, name: str) -> Repo | None:
+    """Lookup helper for the per-repo config page."""
+    with db.session() as s:
+        return s.execute(
+            select(Repo).where(Repo.owner == owner, Repo.name == name)
+        ).scalar_one_or_none()
+
 def remove_repo(db: Database, owner: str, name: str) -> None:
     with db.session() as s:
         r = s.execute(

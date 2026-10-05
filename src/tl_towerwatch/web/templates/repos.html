@@ -93,7 +93,7 @@
         <div style="font-size:12px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap;">
           <span>📅 refresh cada <strong style="color:var(--fg);">{{ r.interval_minutes }} min</strong>{% if r.is_self %} <span style="color:#f1c40f;">(más agresivo: dogfooding)</span>{% endif %}</span>
           <span>🎯 scope: <strong style="color:var(--fg);">{{ r.scope_label }}</strong></span>
-          <span>🤖 LLM: <strong style="color:var(--fg);">{{ r.llm_display }}</strong></span>
+          <span>👥 autores: <strong style="color:var(--fg);">{% if r.allowed_authors_csv %}{{ r.allowed_authors_csv }}{% else %}todos{% endif %}</strong></span>
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;align-items:stretch;min-width:160px;">
@@ -101,7 +101,11 @@
           <button type="submit" class="primary" style="width:100%;">▶ Refrescar ahora</button>
         </form>
         <div style="display:flex;gap:4px;">
-          <button type="button" style="flex:1;">⚙ config</button>
+          <a href="/repos/{{ r.owner }}/{{ r.name }}"
+             data-testid="repo-config-btn-{{ r.owner }}-{{ r.name }}"
+             style="flex:1;background:var(--card);color:var(--fg);border:1px solid var(--border);padding:6px 8px;border-radius:5px;font-size:12px;text-decoration:none;text-align:center;">
+            ⚙ config
+          </a>
           <form method="post" action="/repos/{{ r.owner }}/{{ r.name }}/toggle" style="flex:1;display:flex;">
             <button type="submit" style="flex:1;width:100%;">{% if r.enabled %}⏸ pausar{% else %}▶ activar{% endif %}</button>
           </form>

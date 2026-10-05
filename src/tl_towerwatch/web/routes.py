@@ -38,6 +38,9 @@ from tl_towerwatch.services.repos import (
     add_repo as svc_add_repo,
 )
 from tl_towerwatch.services.repos import (
+    get_repo as svc_get_repo,
+)
+from tl_towerwatch.services.repos import (
     list_repos as svc_list_repos,
 )
 from tl_towerwatch.services.repos import (
@@ -48,6 +51,9 @@ from tl_towerwatch.services.repos import (
 )
 from tl_towerwatch.services.repos import (
     set_repo_enabled as svc_set_repo_enabled,
+)
+from tl_towerwatch.services.repos import (
+    update_repo_config as svc_update_repo_config,
 )
 from tl_towerwatch.services.reviews import compute_badges
 from tl_towerwatch.skills.registry import (
@@ -624,6 +630,77 @@ def repos_remove(owner: str, name: str):
     db = engine_from_settings(settings)
     svc_remove_repo(db, owner, name)
     return RedirectResponse("/repos", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Per-repo config page
+# ---------------------------------------------------------------------------
+
+
+_SCOPE_CHOICES = [
+    ("all", "Todos los PRs abiertos"),
+    ("mine", "Solo PRs donde soy autor"),
+    ("mine_and_review", "PRs donde soy autor + los que me pidieron review"),
+    ("review", "Solo los que me pidieron review"),
+]
+
+
+@router.get("/repos/{owner}/{name}", response_class=HTMLResponse)
+def repo_config_page(request: Request, owner: str, name: str):
+    """Per-repo config — scope, refresh interval, allowed authors,
+    self / dogfooding flag. Reachable via the "⚙ config" button on
+    the repos listing.
+    """
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    db.create_all()
+    repo = svc_get_repo(db, owner, name)
+    if repo is None:
+        return HTMLResponse(
+            f"<h1>Repo no encontrado</h1>"
+            f"<p>{owner}/{name} no está registrado. Volvé a "
+            f"<a href='/repos'>/repos</a>.</p>",
+            status_code=404,
+        )
+    try:
+        authors = json.loads(repo.allowed_authors_json or "[]")
+    except Exception:
+        authors = []
+    repo.allowed_authors_csv = ", ".join(authors)
+    repo.interval_minutes = (repo.refresh_interval_seconds or 300) // 60
+    return templates.TemplateResponse(request, "repo_config.html", {
+        "nav": "repos",
+        "theme": _theme(request),
+        "repo": repo,
+        "scope_choices": _SCOPE_CHOICES,
+        **_user_context(db, "dimh"),
+    })
+
+
+@router.post("/repos/{owner}/{name}/config")
+def repo_config_save(owner: str, name: str,
+                     scope: str = Form(...),
+                     refresh_minutes: int = Form(...),
+                     authors: str = Form(""),
+                     is_self: str = Form("")):
+    """Persist per-repo config (scope / refresh / authors / self)."""
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    author_list = [a for a in authors.split(",") if a.strip()]
+    try:
+        svc_update_repo_config(
+            db, owner, name,
+            scope=scope,
+            refresh_interval_seconds=int(refresh_minutes) * 60,
+            allowed_authors=author_list,
+            is_self=(is_self == "on"),
+        )
+    except KeyError:
+        return RedirectResponse("/repos", status_code=303)
+    return RedirectResponse(
+        f"/repos/{owner}/{name}?ok=saved",
+        status_code=303,
+    )
 
 
 # ---------------------------------------------------------------------------

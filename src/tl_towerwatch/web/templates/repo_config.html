@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}{{ repo.owner }}/{{ repo.name }} — Config{% endblock %}
+{% block content %}
+
+<div style="padding:10px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;">
+  <div>
+    <a href="/repos" style="color:var(--muted);text-decoration:none;">← volver a /repos</a>
+    &nbsp;&nbsp;|&nbsp;&nbsp;
+    <strong style="color:var(--fg);">{{ repo.owner }}/{{ repo.name }}</strong>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    {% if repo.enabled %}
+    <span class="badge badge-success">● activo</span>
+    {% else %}
+    <span class="badge badge-warning">⏸ pausado</span>
+    {% endif %}
+    <span style="color:var(--muted);">último fetch: {{ repo.last_fetched_at or '—' }}</span>
+  </div>
+</div>
+
+{% if request.query_params.get('ok') == 'saved' %}
+<div data-testid="repo-config-saved-banner"
+     style="background:rgba(63,185,80,0.15);border:1px solid var(--success);border-radius:6px;padding:10px 14px;margin:14px 0;color:var(--fg);font-size:13px;">
+  ✓ <strong>Config guardada.</strong> El scheduler toma los nuevos valores en el próximo tick.
+</div>
+{% endif %}
+
+<h2 style="margin:14px 0 4px;">⚙ Config de {{ repo.owner }}/{{ repo.name }}</h2>
+<p class="subtitle" style="margin:0 0 14px;color:var(--muted);font-size:13px;">
+  Qué PRs sincronizar, con qué frecuencia, y qué autores contar.
+</p>
+
+<div class="card" data-testid="repo-config-card">
+  <form method="post" action="/repos/{{ repo.owner }}/{{ repo.name }}/config"
+        data-testid="repo-config-form">
+
+    {# ----------------------------------------------------------------
+       Scope — qué PRs traer. v1.3.0: ya no hay opción de provider /
+       model, solo qué subset del repo sincronizar.
+       ---------------------------------------------------------------- #}
+    <div style="margin-bottom:16px;">
+      <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">
+        🎯 Scope (qué PRs sincronizar)
+      </label>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        {% for value, label in scope_choices %}
+        <label data-testid="scope-{{ value }}-option"
+               style="display:flex;align-items:start;gap:8px;padding:8px 10px;background:var(--bg-secondary);border:1px solid {% if repo.scope == value %}var(--success){% else %}var(--border){% endif %};border-radius:5px;cursor:pointer;">
+          <input type="radio" name="scope" value="{{ value }}"
+                 {% if repo.scope == value %}checked{% endif %}
+                 style="margin-top:3px;">
+          <div>
+            <div style="color:{% if repo.scope == value %}var(--success){% else %}var(--fg){% endif %};font-size:13px;font-weight:600;">
+              {{ value }}
+            </div>
+            <div style="color:var(--muted);font-size:11px;margin-top:2px;">{{ label }}</div>
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ----------------------------------------------------------------
+       Refresh interval — cada cuántos minutos el scheduler sincroniza
+       este repo. Default 5 min, mínimo 1 min, máximo 24 h.
+       ---------------------------------------------------------------- #}
+    <div style="margin-bottom:16px;">
+      <label for="refresh_minutes"
+             style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
+        📅 Refresh interval (minutos)
+      </label>
+      <input id="refresh_minutes"
+             data-testid="refresh-minutes-input"
+             name="refresh_minutes" type="number"
+             min="1" max="1440"
+             value="{{ repo.interval_minutes }}"
+             style="width:120px;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:13px;">
+      <div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.5;">
+        Cada cuántos minutos el scheduler llama a GitHub para refrescar
+        la lista de PRs. Default: <code>5 min</code>. Rango: <code>1 – 1440 min</code>.
+        A más bajo, más fresco pero más rate-limit consume.
+      </div>
+    </div>
+
+    {# ----------------------------------------------------------------
+       Allowed authors — si está vacío, sincronizamos PRs de cualquier
+       autor. Si tiene valores, sólo PRs cuyos autores estén en la lista.
+       ---------------------------------------------------------------- #}
+    <div style="margin-bottom:16px;">
+      <label for="authors"
+             style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;">
+        👥 Allowed authors (GitHub logins, comma-separated)
+      </label>
+      <input id="authors"
+             data-testid="authors-input"
+             name="authors" type="text"
+             value="{{ repo.allowed_authors_csv }}"
+             placeholder="alice, bob, charlie"
+             style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 12px;border-radius:5px;font-family:monospace;font-size:13px;">
+      <div style="color:var(--muted);font-size:11px;margin-top:4px;line-height:1.5;">
+        Vacío = cualquier autor. Con lista = solo PRs cuyos autores estén
+        acá. Útil para filtrar ruido en repos grandes.
+      </div>
+    </div>
+
+    {# ----------------------------------------------------------------
+       Self / dogfooding — cuando el repo ES tl_towerwatch (o tu propio
+       proyecto), querés refresh más frecuente porque estás
+       iterando rápido. Marca el checkbox para marcarlo como self.
+       ---------------------------------------------------------------- #}
+    <div style="margin-bottom:16px;">
+      <label data-testid="self-checkbox-row"
+             style="display:flex;align-items:start;gap:8px;padding:8px 10px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;cursor:pointer;">
+        <input type="checkbox"
+               name="is_self"
+               {% if repo.is_self %}checked{% endif %}
+               style="margin-top:3px;width:16px;height:16px;">
+        <div>
+          <div style="color:var(--fg);font-size:13px;font-weight:600;">⭐ Marcar como <code>is_self</code> (dogfooding)</div>
+          <div style="color:var(--muted);font-size:11px;margin-top:2px;line-height:1.5;">
+            Activa un refresh más agresivo cuando este repo es tu propio
+            proyecto y estás iterando. Sin efecto funcional visible hoy;
+            el scheduler ya usa el interval corto cuando está marcado.
+          </div>
+        </div>
+      </label>
+    </div>
+
+    <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
+      <a href="/repos"
+         style="background:var(--card);color:var(--fg);border:1px solid var(--border);padding:8px 18px;border-radius:5px;font-size:13px;text-decoration:none;">
+        Cancelar
+      </a>
+      <button type="submit"
+              data-testid="save-repo-config-btn"
+              style="background:var(--success);color:#fff;border:0;padding:8px 18px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
+        Guardar config
+      </button>
+    </div>
+  </form>
+</div>
+
+{# ----------------------------------------------------------------
+   Quick actions — refresh / pause / unpause the repo without leaving
+   the config page.
+   ---------------------------------------------------------------- #}
+<div class="card" style="margin-top:14px;">
+  <strong style="color:var(--fg);font-size:13px;">⚡ Quick actions</strong>
+  <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+    <form method="post" action="/repos/{{ repo.owner }}/{{ repo.name }}/refresh" style="margin:0">
+      <button type="submit"
+              style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:6px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+        ▶ Refrescar este repo ahora
+      </button>
+    </form>
+    <form method="post" action="/repos/{{ repo.owner }}/{{ repo.name }}/toggle" style="margin:0">
+      <button type="submit"
+              style="background:var(--card);color:{% if repo.enabled %}var(--warning){% else %}var(--success){% endif %};border:1px solid var(--border);padding:6px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+        {% if repo.enabled %}⏸ Pausar{% else %}▶ Activar{% endif %}
+      </button>
+    </form>
+    <form method="post" action="/repos/{{ repo.owner }}/{{ repo.name }}/remove"
+          style="margin:0"
+          onsubmit="return confirm('¿Quitar {{ repo.owner }}/{{ repo.name }} del dashboard?');">
+      <button type="submit"
+              style="background:var(--card);color:var(--danger);border:1px solid var(--danger);padding:6px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
+        🗑 Quitar este repo
+      </button>
+    </form>
+  </div>
+</div>
+
+{% endblock %}

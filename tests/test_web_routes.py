@@ -1936,3 +1936,108 @@ def test_repos_rate_limit_banner_shows_probe_failure(
         assert "HTTP401" in body
         # The success-shaped fields must not appear when the probe failed.
         assert "4,983 / 5,000 restantes" not in body
+
+
+def test_repos_config_button_routes_to_per_repo_page(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: the per-repo "⚙ config" button on the repos listing is
+    wired to /repos/{owner}/{name} — clicking it lands the user on a
+    real config page that exposes scope, refresh interval, allowed
+    authors, and the self flag.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    add_repo(db, "acme", "alpha", scope="review", allowed_authors=["alice", "bob"])
+
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        # The repos listing has a config button pointing at /repos/.../{n}.
+        r = c.get("/repos")
+        assert r.status_code == 200
+        body = r.text
+        assert "data-testid=\"repo-config-btn-acme-alpha\"" in body
+        assert "⚙ config" in body
+
+        # Clicking through to /repos/.../{n} shows the four config knobs.
+        r2 = c.get("/repos/acme/alpha")
+        assert r2.status_code == 200
+        body2 = r2.text
+        assert "data-testid=\"repo-config-card\"" in body2
+        # Scope radio for "review" (the value we seeded) is checked.
+        assert "data-testid=\"scope-review-option\"" in body2
+        assert "alice, bob" in body2
+        # Refresh interval field is present.
+        assert "data-testid=\"refresh-minutes-input\"" in body2
+        # Authors field is present.
+        assert "data-testid=\"authors-input\"" in body2
+        # Self flag checkbox.
+        assert "data-testid=\"self-checkbox-row\"" in body2
+
+
+def test_repos_config_save_persists_changes(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: POST /repos/.../config updates the per-repo row."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import Repo
+    from sqlalchemy import select
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    add_repo(db, "acme", "alpha", scope="review")
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/repos/acme/alpha/config", data={
+            "scope": "all",
+            "refresh_minutes": "10",
+            "authors": "carol, dan",
+            "is_self": "on",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        assert "ok=saved" in r.headers["location"]
+    with db.session() as s:
+        r = s.execute(select(Repo).where(Repo.owner == "acme", Repo.name == "alpha")).scalar_one()
+        assert r.scope == "all"
+        assert r.refresh_interval_seconds == 600
+        assert r.is_self == 1
+        import json
+        assert json.loads(r.allowed_authors_json) == ["carol", "dan"]
+
+
+def test_repos_config_page_404_for_unknown_repo(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: GET /repos/{unknown}/{unknown} returns 404 instead of
+    a blank render."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/repos/nope/nada")
+        assert r.status_code == 404
