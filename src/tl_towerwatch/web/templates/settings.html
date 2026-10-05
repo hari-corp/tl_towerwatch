@@ -16,7 +16,7 @@
 <div data-testid="first-run-banner"
      style="background:rgba(88,166,255,0.15);border:1px solid var(--accent);border-radius:6px;padding:12px 14px;margin-bottom:14px;color:var(--fg);">
   👋 <strong>Primera vez.</strong> Pegá tu GitHub PAT abajo para empezar. La próxima vez podés volver
-  a esta pantalla para ajustar credenciales y skills.
+  a esta pantalla para ajustar credenciales y prompts.
 </div>
 {% endif %}
 {% set test_result = request.query_params.get('test') %}
@@ -38,16 +38,16 @@
   ⚠ <strong>Sin token configurado.</strong> Pegá un PAT abajo antes de probar.
 </div>
 {% endif %}
-{% if request.query_params.get('ok') == 'skills' %}
-<div data-testid="skills-saved-banner"
+{% if request.query_params.get('ok') == 'prompts' %}
+<div data-testid="prompts-saved-banner"
      style="background:rgba(63,185,80,0.15);border:1px solid var(--success);border-radius:6px;padding:10px 14px;margin-bottom:14px;color:var(--fg);font-size:13px;">
-  ✓ <strong>Skills guardadas.</strong> Los templates de prompts fueron actualizados.
+  ✓ <strong>Prompts guardados.</strong> Los templates fueron actualizados.
 </div>
 {% endif %}
 
-<h2 style="margin:0 0 4px 0;">Settings — Auth &amp; Skills</h2>
+<h2 style="margin:0 0 4px 0;">Settings — Auth &amp; Prompts</h2>
 <p class="subtitle" style="margin:0 0 16px 0;">
-  Configuración global: cómo te autenticás con GitHub y qué prompts disparar para los reviews
+  Configuración global: cómo te autenticás con GitHub y los prompts del flujo de review
 </p>
 
 {# ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@
    --------------------------------------------------------------------------- #}
 <div data-testid="settings-tabs"
      style="display:flex;gap:0;font-size:13px;border-bottom:1px solid var(--border);margin-bottom:16px;">
-  <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">🔐 Auth &amp; Skills</span>
+  <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">🔐 Auth &amp; Prompts</span>
   <span style="padding:8px 14px;color:var(--muted);">Apariencia</span>
   <span style="padding:8px 14px;color:var(--muted);">Refresh global</span>
 </div>
@@ -298,92 +298,56 @@
   </div>
 
   {# ========================================================================
-     RIGHT — Skills registry + per-skill prompts editor
-     v1.3.0: the prompt editor is ALWAYS VISIBLE (no <details> to expand).
-     Each skill block shows the name + description + enabled checkbox at the
-     top, and the 3 prompt slots underneath as textareas. The user can
-     paste custom templates or click "Restore default" per skill to reset.
+     RIGHT — Global prompts editor.
+     v1.3.0 (revised): the three prompts are GLOBAL — there is no per-skill
+     customisation anymore. The card shows 3 textareas (review /
+     post_review / check_resolved) and the user edits them in place. Empty
+     fields fall back to the built-in defaults on the next render.
      ======================================================================== #}
-  <div class="card" data-testid="skills-card">
+  <div class="card" data-testid="prompts-card">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
-      <span style="font-size:18px;">🎯</span>
-      <strong style="color:var(--fg);font-size:15px;">Skills &amp; prompts</strong>
-      <span data-testid="skills-count" style="margin-left:auto;color:var(--muted);font-size:11px;">
-        {{ enabled_skills | length }} configuradas
+      <span style="font-size:18px;">📋</span>
+      <strong style="color:var(--fg);font-size:15px;">Prompts</strong>
+      <span data-testid="prompts-count" style="margin-left:auto;color:var(--muted);font-size:11px;">
+        3 slots
       </span>
     </div>
 
     <p style="margin:0 0 14px 0;color:var(--muted);font-size:12px;line-height:1.5;">
-      Cada skill define <strong style="color:var(--accent);">3 prompts</strong>:
-      <strong style="color:var(--accent);">review</strong> (análisis del diff),
-      <strong style="color:var(--accent);">post_review</strong> (resumen del output) y
-      <strong style="color:var(--accent);">check_resolved</strong> (verificar si los comentarios fueron resueltos).
+      Estos <strong style="color:var(--accent);">3 prompts</strong> aplican globalmente
+      a todo el flujo de review. La tab <strong style="color:var(--accent);">review</strong>
+      renderea el prompt de análisis (con el diff completo), <strong style="color:var(--accent);">post_review</strong>
+      resume los hallazgos que generaste, y <strong style="color:var(--accent);">check_resolved</strong>
+      verifica si los comentarios fueron resueltos en commits posteriores.
       Los placeholders <code>{title}</code>, <code>{body}</code>, <code>{author}</code>,
       <code>{diff}</code>, <code>{files}</code>, <code>{findings}</code> y
       <code>{mode_intro}</code> se rellenan automáticamente cuando rendereás el prompt.
     </p>
 
-    <form method="post" action="/settings/skills" data-testid="skills-form">
-      {% if enabled_skills %}
-        {% for skill in enabled_skills %}
-        <div data-testid="skill-row-{{ skill.name }}"
-             style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:12px;">
-          {# Skill header: checkbox + name + description + CLI flag #}
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
-            <label style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer;">
-              <input type="checkbox"
-                     name="skill.{{ skill.name }}.enabled"
-                     {% if skill.enabled %}checked{% endif %}
-                     style="margin:0;width:16px;height:16px;">
-              <div style="flex:1;">
-                <div style="color:var(--fg);font-size:13px;font-weight:600;">
-                  {{ skill.name }}
-                  {% if skill.cli_flag %}
-                  <code style="background:var(--code-bg);padding:1px 6px;border-radius:3px;color:var(--accent);font-size:10px;margin-left:4px;font-weight:400;">
-                    {{ skill.cli_flag }}
-                  </code>
-                  {% endif %}
-                </div>
-                <div style="color:var(--muted);font-size:11px;margin-top:2px;line-height:1.4;">
-                  {{ skill.description }}
-                </div>
-              </div>
-            </label>
-          </div>
-          <input type="hidden" name="skill.{{ skill.name }}.name" value="{{ skill.name }}">
-          <input type="hidden" name="skill.{{ skill.name }}.cli_flag" value="{{ skill.cli_flag }}">
-          <input type="hidden" name="skill.{{ skill.name }}.description" value="{{ skill.description }}">
-
-          {# Prompt editor — 3 textareas, one per slot, ALWAYS visible #}
-          <div style="display:flex;flex-direction:column;gap:10px;">
-            {% for slot in prompt_slots %}
-            {% set slot_descriptions = {
-              'review': 'Se usa cuando abrís la tab "review" del prompt viewer. Recibís el diff completo y debés devolver hallazgos estructurados.',
-              'post_review': 'Se usa cuando pedís un resumen de los hallazgos que ya generaste (resumir el output del review).',
-              'check_resolved': 'Se usa cuando querés verificar si los comentarios fueron resueltos en commits posteriores.'
-            } %}
-            <div data-testid="skill-{{ skill.name }}-prompt-{{ slot }}-row">
-              <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;">
-                <label style="font-size:11px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.5px;">
-                  {{ slot.replace('_', ' ') }}
-                </label>
-                <span style="color:var(--muted);font-size:11px;">
-                  · {{ slot_descriptions.get(slot, '') }}
-                </span>
-              </div>
-              <textarea name="skill.{{ skill.name }}.prompt.{{ slot }}"
-                        data-testid="skill-{{ skill.name }}-prompt-{{ slot }}"
-                        rows="4"
-                        placeholder="Dejá vacío para usar el template por defecto…"
-                        style="width:100%;min-height:90px;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:10px 12px;border-radius:5px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.5;box-sizing:border-box;resize:vertical;">{{ skill.prompts.get(slot, '') }}</textarea>
-            </div>
-            {% endfor %}
-          </div>
+    <form method="post" action="/settings/prompts" data-testid="prompts-form">
+      {% set slot_descriptions = {
+        'review': 'Análisis del diff. Devolvés hallazgos estructurados.',
+        'post_review': 'Resumen del output del review. Categorizás hallazgos.',
+        'check_resolved': 'Verificás si los comentarios fueron resueltos en commits posteriores.'
+      } %}
+      {% for slot in prompt_slots %}
+      <div data-testid="prompt-{{ slot }}-row"
+           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:10px;">
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:6px;">
+          <label style="font-size:12px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.5px;">
+            {{ slot.replace('_', ' ') }}
+          </label>
+          <span style="color:var(--muted);font-size:11px;">
+            · {{ slot_descriptions.get(slot, '') }}
+          </span>
         </div>
-        {% endfor %}
-      {% else %}
-        <p style="color:var(--muted);font-size:12px;">0 skills configuradas. Creá un bloque <code>skills:</code> en <code>config.yaml</code> o reinstalá la app para obtener los defaults.</p>
-      {% endif %}
+        <textarea name="prompt.{{ slot }}"
+                  data-testid="prompt-{{ slot }}"
+                  rows="4"
+                  placeholder="Dejá vacío para usar el template por defecto…"
+                  style="width:100%;min-height:90px;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:10px 12px;border-radius:5px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.5;box-sizing:border-box;resize:vertical;">{{ prompts.get(slot, '') }}</textarea>
+      </div>
+      {% endfor %}
 
       {# Placeholders cheat sheet — visible so the user knows what they can reference. #}
       <details style="margin-bottom:14px;">
@@ -402,9 +366,9 @@
       </details>
 
       <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px;">
-        <button type="submit" data-testid="save-skills-btn"
+        <button type="submit" data-testid="save-prompts-btn"
                 style="background:var(--success);color:#fff;border:0;padding:8px 18px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
-          Guardar skills
+          Guardar prompts
         </button>
       </div>
     </form>
@@ -422,8 +386,8 @@
   <div style="display:flex;gap:8px;align-items:center;">
     {% if request.query_params.get('ok') == 'auth' %}
       <span style="color:var(--success);" data-testid="saved-indicator">✓ Auth guardado</span>
-    {% elif request.query_params.get('ok') == 'skills' %}
-      <span style="color:var(--success);" data-testid="saved-indicator">✓ Skills guardadas</span>
+    {% elif request.query_params.get('ok') == 'prompts' %}
+      <span style="color:var(--success);" data-testid="saved-indicator">✓ Prompts guardados</span>
     {% elif request.query_params.get('ok') == 'defaults' %}
       <span style="color:var(--success);" data-testid="saved-indicator">✓ Defaults restaurados</span>
     {% else %}

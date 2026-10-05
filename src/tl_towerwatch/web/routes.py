@@ -48,10 +48,8 @@ from tl_towerwatch.services.repos import (
 from tl_towerwatch.services.reviews import compute_badges
 from tl_towerwatch.skills.registry import (
     PROMPT_SLOTS,
-    Skill,
-    default_registry,
-    load_registry,
-    save_registry as _save_registry,
+    load_prompts,
+    save_prompts as _save_prompts,
 )
 
 _TPL_DIR = Path(__file__).parent / "templates"
@@ -644,26 +642,6 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
     commits_count = 0
     human_reviews_count = 0
     human_comments_count = 0
-    # Skills come from the registry on disk; fall back to the defaults
-    # so the prompt viewer still has a template to render for first-run
-    # users.
-    enabled_skills: list[dict] = []
-    for sk in load_registry(settings.data_dir):
-        if not sk.enabled:
-            continue
-        enabled_skills.append({
-            "name": sk.name,
-            "cli_flag": sk.cli_flag,
-            "description": sk.description,
-        })
-    if not enabled_skills:
-        for sk in default_registry():
-            if sk.enabled:
-                enabled_skills.append({
-                    "name": sk.name,
-                    "cli_flag": sk.cli_flag,
-                    "description": sk.description,
-                })
     with db.session() as s:
         repo = s.execute(select(Repo).where(
             Repo.owner == owner, Repo.name == name
@@ -694,7 +672,6 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
          "commits_count": commits_count,
          "human_reviews_count": human_reviews_count,
          "human_comments_count": human_comments_count,
-         "enabled_skills": enabled_skills,
          "prompt_slots": PROMPT_SLOTS,
          "owner": owner, "name": name,
          **_user_context(db, "dimh")})
@@ -816,19 +793,10 @@ def settings_page(request: Request):
     db = engine_from_settings(settings)
     db.create_all()
     cfg = load_config_yaml(settings.data_dir / "config.yaml")
-    # Skills registry preview — load from disk (preserves user edits);
-    # fall back to defaults so a first-run user sees the templates.
-    skills = load_registry(settings.data_dir)
-    enabled_skills = [
-        {
-            "name": s.name,
-            "description": s.description,
-            "cli_flag": s.cli_flag,
-            "enabled": bool(s.enabled),
-            "prompts": {slot: s.prompts.get(slot, "") for slot in PROMPT_SLOTS},
-        }
-        for s in skills
-    ]
+    # Global prompts — load from disk (preserves user edits) with the
+    # built-in defaults as fallback so a first-run user sees the
+    # templates pre-filled.
+    prompts = load_prompts(settings.data_dir)
     if settings.github_oauth_access_token:
         auth_mode = "oauth"
     else:
@@ -838,7 +806,7 @@ def settings_page(request: Request):
     return templates.TemplateResponse(request, "settings.html",
         {"nav": "settings", "theme": _theme(request),
          "settings": settings,
-         "enabled_skills": enabled_skills,
+         "prompts": prompts,
          "prompt_slots": PROMPT_SLOTS,
          "auth_mode": auth_mode,
          "token_last4": token_last4,
@@ -872,71 +840,23 @@ def settings_auth_save(github_token: str = Form(""),
     return RedirectResponse("/settings?ok=auth", status_code=303)
 
 
-@router.post("/settings/skills")
-async def settings_skills_save(request: Request):
-    """Persist the per-skill prompt editor submissions.
+@router.post("/settings/prompts")
+async def settings_prompts_save(request: Request):
+    """Persist the global prompts editor submissions.
 
-    The form posts one block per skill, each carrying ``enabled``,
-    ``description``, ``cli_flag`` and the three prompt slots. We
-    rebuild the registry from the submitted values and write through
-    ``save_registry`` so the rest of the file (theme, auth, refresh
-    interval) is preserved.
+    The form posts one field per slot (``prompt.<slot>``). Empty
+    submissions are tolerated — the slot falls back to the built-in
+    default the next time it's loaded.
     """
     settings = load_settings()
     form = await request.form()
-    # Walk the form and bucket fields by skill name. The template renders
-    # fields like:
-    #   skill.<name>.enabled = "on"
-    #   skill.<name>.description = "..."
-    #   skill.<name>.cli_flag = "..."
-    #   skill.<name>.prompt.<slot> = "..."
-    skills_in: dict[str, dict] = {}
-    for raw_key in form.keys():
-        if not isinstance(raw_key, str) or not raw_key.startswith("skill."):
-            continue
-        parts = raw_key.split(".")
-        if len(parts) < 3:
-            continue
-        skill_name = parts[1]
-        leaf = ".".join(parts[2:])
-        bucket = skills_in.setdefault(skill_name, {})
-        # If a field is repeated (multi-value), keep the first non-empty.
-        values = form.getlist(raw_key)
-        bucket[leaf] = next((v for v in values if v), values[0] if values else "")
-    # Existing registry keeps any skill the form omitted (the template
-    # always submits one row per skill, but we tolerate partial submits).
-    existing = {s.name: s for s in load_registry(settings.data_dir)}
-    out: list[Skill] = []
-    for skill_name, vals in skills_in.items():
-        prompts = {}
-        for slot in PROMPT_SLOTS:
-            prompts[slot] = vals.get(f"prompt.{slot}", "") or ""
-        out.append(Skill(
-            name=skill_name,
-            enabled=_truthy(vals.get("enabled")),
-            description=vals.get("description", "") or "",
-            cli_flag=vals.get("cli_flag", "") or f"--skill {skill_name}",
-            prompts=prompts,
-        ))
-    if not out:
-        # Empty submission — keep the existing registry untouched so the
-        # user can't accidentally wipe their config by submitting with
-        # all rows collapsed.
-        return RedirectResponse("/settings?ok=skills", status_code=303)
-    _save_registry(settings.data_dir, out)
-    return RedirectResponse("/settings?ok=skills", status_code=303)
-
-
-def _truthy(value) -> bool:
-    """Coerce a form value to a boolean. Checkboxes send ``"on"`` when
-    checked and are absent when unchecked; explicit strings like
-    ``"true"`` / ``"1"`` / ``"yes"`` also count as truthy. Everything
-    else is False."""
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"on", "true", "1", "yes"}
+    out: dict[str, str] = {}
+    for slot in PROMPT_SLOTS:
+        # If the same key is repeated, keep the first non-empty value.
+        values = form.getlist(f"prompt.{slot}")
+        out[slot] = next((v for v in values if v), values[0] if values else "")
+    _save_prompts(settings.data_dir, out)
+    return RedirectResponse("/settings?ok=prompts", status_code=303)
 
 
 @router.post("/settings/auth/disconnect")

@@ -99,27 +99,13 @@ def init():
         settings.data_dir / "config.yaml",
         {
             "auth": {"mode": mode},
-            "skills": {
-                "superpowers": {
-                    "enabled": True,
-                    "cli_flag": "--enable-superpowers",
-                    "description": "Code-review and quality skills",
-                    "prompts": {
-                        "review": "",
-                        "post_review": "",
-                        "check_resolved": "",
-                    },
-                },
-                "ponytail": {
-                    "enabled": True,
-                    "cli_flag": "--skill ponytail",
-                    "description": "Custom review heuristics",
-                    "prompts": {
-                        "review": "",
-                        "post_review": "",
-                        "check_resolved": "",
-                    },
-                },
+            # Empty prompts here — the loader falls back to the built-in
+            # defaults on first read so the user can render the
+            # prompt viewer right away without writing templates.
+            "prompts": {
+                "review": "",
+                "post_review": "",
+                "check_resolved": "",
             },
         },
     )

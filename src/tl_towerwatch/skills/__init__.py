@@ -1,10 +1,7 @@
 from tl_towerwatch.skills.registry import (
     PROMPT_SLOTS,
-    Skill,
-    default_registry,
-    load_registry,
-    save_registry,
-    save_skills_to_yaml,
+    load_prompts,
+    save_prompts,
 )
 from tl_towerwatch.skills.prompts import (
     DEFAULT_TEMPLATE,
@@ -14,10 +11,7 @@ from tl_towerwatch.skills.prompts import (
 __all__ = [
     "DEFAULT_TEMPLATE",
     "PROMPT_SLOTS",
-    "Skill",
-    "default_registry",
-    "load_registry",
+    "load_prompts",
     "render_prompt",
-    "save_registry",
-    "save_skills_to_yaml",
+    "save_prompts",
 ]

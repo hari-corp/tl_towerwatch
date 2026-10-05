@@ -303,11 +303,11 @@ def test_assemble_review_prompt_truncates_huge_diff(tmp_path, monkeypatch):
     from tl_towerwatch.config_io import save_config_yaml
     from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
     cfg = tmp_path / "config.yaml"
-    save_config_yaml(cfg, {"skills": {"superpowers": {
-        "enabled": True, "cli_flag": "--x", "description": "d",
-        "prompts": {"review": "{title} | {diff}",
-                    "post_review": "{findings}",
-                    "check_resolved": "{findings}"}}}})
+    save_config_yaml(cfg, {"prompts": {
+        "review": "{title} | {diff}",
+        "post_review": "{findings}",
+        "check_resolved": "{findings}",
+    }})
     respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
         200, json={"number": 1, "title": "big pr", "body": "b",
                    "user": {"login": "a"}, "state": "open", "draft": False,
@@ -337,20 +337,17 @@ def test_assemble_review_prompt_truncates_huge_diff(tmp_path, monkeypatch):
 
 
 @respx.mock
-def test_assemble_review_prompt_uses_first_enabled_skill(tmp_path, monkeypatch):
-    """v1.3.0: when multiple skills are enabled, ``assemble_review_prompt``
-    picks the first one's slot template — deterministic for the CLI/web
-    parity invariant."""
+def test_assemble_review_prompt_uses_user_prompts(tmp_path, monkeypatch):
+    """v1.3.0 (revised): the prompt template comes from the global
+    ``prompts.<slot>`` block in config.yaml. Setting ``review`` to a
+    custom template must produce that template in the rendered output."""
     from tl_towerwatch.config_io import save_config_yaml
     from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
     cfg = tmp_path / "config.yaml"
-    save_config_yaml(cfg, {"skills": {
-        "first":  {"enabled": True, "cli_flag": "--f", "description": "",
-                   "prompts": {"review": "FIRST({title})", "post_review": "",
-                              "check_resolved": ""}},
-        "second": {"enabled": True, "cli_flag": "--s", "description": "",
-                   "prompts": {"review": "SECOND({title})", "post_review": "",
-                              "check_resolved": ""}},
+    save_config_yaml(cfg, {"prompts": {
+        "review": "CUSTOM({title})",
+        "post_review": "",
+        "check_resolved": "",
     }})
     respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
         200, json={"number": 1, "title": "feat", "body": "",
@@ -368,8 +365,7 @@ def test_assemble_review_prompt_uses_first_enabled_skill(tmp_path, monkeypatch):
             gh, data_dir=tmp_path, owner="o", name="n", number=1,
             slot="review", mode="fresh",
         )
-    assert "FIRST(feat)" in out
-    assert "SECOND" not in out
+    assert "CUSTOM(feat)" in out
 
 
 @respx.mock

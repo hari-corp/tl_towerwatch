@@ -1298,11 +1298,11 @@ def test_pr_show_review_prompt_route_returns_html_fragment(tmp_path, monkeypatch
     db = engine_from_settings(settings)
     db.create_all()
     save_config_yaml(tmp_path / "config.yaml", {
-        "skills": {"superpowers": {
-            "enabled": True, "cli_flag": "--x", "description": "d",
-            "prompts": {"review": "REVIEW {title}",
-                        "post_review": "POST {findings}",
-                        "check_resolved": "CHECK {findings}"}}}})
+        "prompts": {
+            "review": "REVIEW {title}",
+            "post_review": "POST {findings}",
+            "check_resolved": "CHECK {findings}",
+        }})
     with db.session() as s:
         s.add(User(login="dimh"))
     repo = add_repo(db, "acme", "alpha")
@@ -1348,20 +1348,16 @@ def test_pr_show_review_prompt_route_returns_html_fragment(tmp_path, monkeypatch
         assert "prompt_slot=post_review" in r2.headers["location"]
 
 
-def test_settings_skills_save_persists_prompts(tmp_path, monkeypatch, respx_mock):
-    """v1.3.0: POST /settings/skills persists the per-skill prompts back
-    to config.yaml. The route uses ``await request.form()`` and parses
-    the dotted field names so the standard Form() binding doesn't fight
-    with multi-value keys."""
+def test_settings_prompts_save_persists(tmp_path, monkeypatch, respx_mock):
+    """v1.3.0 (revised): POST /settings/prompts persists the 3 global
+    prompts back to config.yaml. The route uses ``await request.form()``
+    and pulls each ``prompt.<slot>`` value."""
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.config_io import load_config_yaml
     from tl_towerwatch.db.database import engine_from_settings
-    # Skills saved via web form must have the expected slots. Import via
-    # the package-level re-export to make sure the registry helper is the
-    # one the settings form actually uses.
-    from tl_towerwatch.skills.registry import load_registry
+    from tl_towerwatch.skills.registry import load_prompts
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
     db.create_all()
@@ -1370,35 +1366,23 @@ def test_settings_skills_save_persists_prompts(tmp_path, monkeypatch, respx_mock
                               headers={"X-OAuth-Scopes": "repo, read:user"}))
     app = create_app()
     with TestClient(app) as c:
-        r = c.post("/settings/skills", data={
-            "skill.superpowers.enabled": "on",
-            "skill.superpowers.name": "superpowers",
-            "skill.superpowers.cli_flag": "--x",
-            "skill.superpowers.description": "review heuristics",
-            "skill.superpowers.prompt.review": "REV {title}",
-            "skill.superpowers.prompt.post_review": "POST {findings}",
-            "skill.superpowers.prompt.check_resolved": "CHECK {findings}",
-            "skill.ponytail.enabled": "",
-            "skill.ponytail.name": "ponytail",
-            "skill.ponytail.cli_flag": "--y",
-            "skill.ponytail.description": "pony heuristics",
-            "skill.ponytail.prompt.review": "PONY-REV {title}",
-            "skill.ponytail.prompt.post_review": "PONY-POST {findings}",
-            "skill.ponytail.prompt.check_resolved": "PONY-CHECK {findings}",
+        r = c.post("/settings/prompts", data={
+            "prompt.review": "REV {title}",
+            "prompt.post_review": "POST {findings}",
+            "prompt.check_resolved": "CHECK {findings}",
         }, follow_redirects=False)
         assert r.status_code == 303
-        assert "ok=skills" in r.headers["location"]
+        assert "ok=prompts" in r.headers["location"]
     cfg = load_config_yaml(tmp_path / "config.yaml")
-    assert "skills" in cfg
-    assert cfg["skills"]["superpowers"]["enabled"] is True
-    assert cfg["skills"]["superpowers"]["prompts"]["review"] == "REV {title}"
-    assert cfg["skills"]["ponytail"]["enabled"] is False
-    assert cfg["skills"]["ponytail"]["prompts"]["review"] == "PONY-REV {title}"
-    # load_registry round-trips the file we just wrote.
-    skills = load_registry(tmp_path)
-    by_name = {s.name: s for s in skills}
-    assert by_name["superpowers"].prompts["review"] == "REV {title}"
-    assert by_name["ponytail"].prompts["review"] == "PONY-REV {title}"
+    assert "prompts" in cfg
+    assert cfg["prompts"]["review"] == "REV {title}"
+    assert cfg["prompts"]["post_review"] == "POST {findings}"
+    assert cfg["prompts"]["check_resolved"] == "CHECK {findings}"
+    # load_prompts round-trips the file we just wrote.
+    loaded = load_prompts(tmp_path)
+    assert loaded["review"] == "REV {title}"
+    assert loaded["post_review"] == "POST {findings}"
+    assert loaded["check_resolved"] == "CHECK {findings}"
 
 
 def test_settings_renders_no_llm_block(tmp_path, monkeypatch, respx_mock):
@@ -1414,16 +1398,18 @@ def test_settings_renders_no_llm_block(tmp_path, monkeypatch, respx_mock):
         r = c.get("/settings")
         assert r.status_code == 200
         body = r.text
-        # LLM card testid removed; skills card present.
-        assert "data-testid=\"skills-card\"" in body
+        # LLM card testid removed; prompts card present.
+        assert "data-testid=\"prompts-card\"" in body
         assert "data-testid=\"llm-card\"" not in body
         # Provider selector / model picker gone.
         assert "data-testid=\"provider-select\"" not in body
         assert "TOWERWATCH_LLM_PROVIDER" not in body
-        # Skills prompts editor visible.
-        assert "data-testid=\"skills-form\"" in body
+        # Skills listing gone — only the 3-slot prompts editor.
+        assert "data-testid=\"skills-card\"" not in body
+        assert "data-testid=\"skills-form\"" not in body
+        assert "data-testid=\"prompts-form\"" in body
         for slot in ("review", "post_review", "check_resolved"):
-            assert f"prompt.{slot}" in body or f"prompt_{slot}" in body
+            assert f'prompt.{slot}"' in body or f"prompt.{slot}\"" in body
 
 
 def test_pr_detail_renders_prompt_viewer(tmp_path, monkeypatch, respx_mock):

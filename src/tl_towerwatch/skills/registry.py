@@ -1,42 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
 import yaml
 
 
-# Names of the three prompt slots every skill exposes. Kept as a
-# module-level constant so the settings UI, the prompt assembly, and
-# the load_registry helper all agree on the keys. Order matters: the
-# review flow uses ``prompts[REVIEW]`` first, then ``post_review``,
-# then ``check_resolved``.
+# Names of the three prompt slots the app exposes. Order matters: the
+# review flow uses ``review`` first, then ``post_review``, then
+# ``check_resolved``. The PR detail page renders a tab per slot; the
+# CLI ``tl_towerwatch review --slot=<name>`` matches these same names.
 PROMPT_SLOTS = ("review", "post_review", "check_resolved")
-
-
-@dataclass
-class Skill:
-    """One entry in the skills registry.
-
-    The ``prompts`` dict maps a slot name (``review`` / ``post_review`` /
-    ``check_resolved``) to the prompt template body. Templates are
-    plain text; the assembly layer fills ``{title}``, ``{body}``,
-    ``{diff}``, ``{author}`` etc. at render time so the user only edits
-    the static skeleton.
-    """
-    name: str
-    description: str
-    cli_flag: str
-    enabled: bool = True
-    prompts: dict[str, str] = field(default_factory=dict)
 
 
 def _default_prompts() -> dict[str, str]:
     """Built-in prompt templates shipped with the app.
 
-    The defaults are written so a fresh install produces useful prompts
-    without forcing the user to type anything. Users edit them in
-    /settings; edits persist to config.yaml.
+    v1.3.0: collapsed to a single global set — the three prompts apply
+    to the whole app, not per-skill. Users edit them in /settings and
+    the edits persist to the top-level ``prompts`` block of
+    ``config.yaml``. The defaults here ensure a fresh install produces
+    useful prompts without forcing the user to type anything.
     """
     return {
         "review": (
@@ -70,19 +54,24 @@ def _default_prompts() -> dict[str, str]:
     }
 
 
-def default_registry() -> list[Skill]:
-    return [
-        Skill(name="superpowers",
-              description="Code-review and quality skills (requesting-code-review, verification-before-completion).",
-              cli_flag="--enable-superpowers",
-              enabled=True,
-              prompts=_default_prompts()),
-        Skill(name="ponytail",
-              description="Custom review heuristics.",
-              cli_flag="--skill ponytail",
-              enabled=True,
-              prompts=_default_prompts()),
-    ]
+def load_prompts(data_dir: Path) -> dict[str, str]:
+    """Load the global prompts from ``<data_dir>/config.yaml``.
+
+    Returns the built-in defaults when the file doesn't exist yet
+    (first-run) or when the ``prompts`` block is missing. Per-slot
+    fallback: if a slot is missing or empty in the user's config, we
+    fall back to the bundled default — never an empty string — so the
+    prompt viewer always renders something.
+    """
+    cfg = data_dir / "config.yaml"
+    if not cfg.exists():
+        return _default_prompts()
+    try:
+        data = yaml.safe_load(cfg.read_text()) or {}
+    except Exception:
+        return _default_prompts()
+    raw = data.get("prompts", {}) if isinstance(data, dict) else {}
+    return _coerce_prompts(raw)
 
 
 def _coerce_prompts(raw: Any) -> dict[str, str]:
@@ -110,31 +99,12 @@ def _coerce_prompts(raw: Any) -> dict[str, str]:
     return out
 
 
-def load_registry(data_dir: Path) -> list[Skill]:
-    cfg = data_dir / "config.yaml"
-    if not cfg.exists():
-        return default_registry()
-    data = yaml.safe_load(cfg.read_text()) or {}
-    raw = data.get("skills", {})
-    out: list[Skill] = []
-    for name, val in raw.items():
-        if isinstance(val, dict):
-            out.append(Skill(
-                name=name,
-                description=val.get("description", ""),
-                cli_flag=val.get("cli_flag", f"--skill {name}"),
-                enabled=bool(val.get("enabled", True)),
-                prompts=_coerce_prompts(val.get("prompts")),
-            ))
-    return out or default_registry()
+def save_prompts(data_dir: Path, prompts: dict[str, str]) -> None:
+    """Persist the user's prompts to ``<data_dir>/config.yaml``.
 
-
-def save_registry(data_dir: Path, skills: list[Skill]) -> None:
-    """Persist the skills registry to config.yaml.
-
-    The rest of config.yaml is preserved (theme, auth, refresh interval)
-    — we only replace the ``skills`` block so the user's other
-    preferences don't get clobbered when they tweak prompts.
+    Only the ``prompts`` block is replaced; everything else (theme,
+    auth, refresh interval) is preserved. Empty strings clear the slot and
+    the next ``load_prompts`` will fall back to the default.
     """
     cfg_path = data_dir / "config.yaml"
     data: dict = {}
@@ -143,30 +113,11 @@ def save_registry(data_dir: Path, skills: list[Skill]) -> None:
             data = yaml.safe_load(cfg_path.read_text()) or {}
         except Exception:
             data = {}
-    skills_block: dict[str, dict] = {}
-    for s in skills:
-        skills_block[s.name] = {
-            "enabled": bool(s.enabled),
-            "cli_flag": s.cli_flag,
-            "description": s.description,
-            "prompts": dict(s.prompts),
-        }
-    data["skills"] = skills_block
-    cfg_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
-
-
-def save_skills_to_yaml(data_dir: Path, skills: list[dict]) -> None:
-    """Persist skills from the settings form. The form submits plain
-    dicts (not Skill instances) so the layer that owns the I/O is
-    decoupled from the dataclass. Each entry has keys ``name``,
-    ``enabled``, ``cli_flag``, ``description``, ``prompts``."""
-    save_registry(data_dir, [
-        Skill(
-            name=s["name"],
-            enabled=bool(s.get("enabled", True)),
-            cli_flag=s.get("cli_flag", f"--skill {s['name']}"),
-            description=s.get("description", ""),
-            prompts=s.get("prompts", {}),
-        )
-        for s in skills
-    ])
+    block: dict[str, str] = {}
+    for slot in PROMPT_SLOTS:
+        body = prompts.get(slot, "")
+        block[slot] = body if isinstance(body, str) else ""
+    data["prompts"] = block
+    cfg_path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    )

@@ -3,8 +3,8 @@
 v1.3.0 removed all direct LLM integration. tl_towerwatch now just
 builds the prompt body the user would otherwise feed to an external
 LLM (Claude Code, ChatGPT, etc.). The prompt is rendered by combining
-the user's chosen skill's slot template (``review`` / ``post_review`` /
-``check_resolved``) with the live PR metadata + diff fetched from
+the user's *global* prompts (one per slot: ``review`` / ``post_review``
+/ ``check_resolved``) with the live PR metadata + diff fetched from
 GitHub. The user copies the output, pastes it into their LLM, and
 interprets the result themselves.
 
@@ -15,9 +15,11 @@ web outputs are byte-identical.
 """
 from __future__ import annotations
 
-from typing import Iterable
 from tl_towerwatch.github.client import GitHubClient
-from tl_towerwatch.skills.registry import Skill, load_registry, PROMPT_SLOTS
+from tl_towerwatch.skills.registry import (
+    PROMPT_SLOTS,
+    load_prompts,
+)
 
 
 VALID_SLOTS = PROMPT_SLOTS  # ("review", "post_review", "check_resolved")
@@ -35,24 +37,25 @@ def assemble_review_prompt(
 ) -> str:
     """Return the rendered prompt body for ``owner/name#number``.
 
-    Loads the enabled skills from ``<data_dir>/config.yaml``, picks
-    the ``slot`` template from the FIRST enabled skill (the user can
-    re-arrange skills later — for now we render the first match so the
-    output is deterministic), fetches the PR metadata + file list
-    from GitHub, and runs the template through ``Skill.prompts[slot]``.
+    Loads the global prompts from ``<data_dir>/config.yaml`` (with the
+    built-in defaults as fallback), fetches the PR metadata + file list
+    from GitHub, and runs the chosen slot's template through
+    ``str.format``.
 
     For slots that need a list of prior findings (``post_review``,
-    ``check_resolved``), the assistant can't fetch them without
-    agent execution — so we emit a friendly placeholder the user fills
-    in manually. For the ``review`` slot we splice in the live PR
+    ``check_resolved``), the assistant can't fetch them without agent
+    execution — so we emit a friendly placeholder the user fills in
+    manually. For the ``review`` slot we splice in the live PR
     description, diff (capped per settings), and head SHA.
     """
     if slot not in VALID_SLOTS:
         raise ValueError(f"unknown prompt slot {slot!r}; must be one of {VALID_SLOTS}")
-    skills = [s for s in load_registry(data_dir) if s.enabled]
-    if not skills:
-        raise ValueError("No enabled skills configured. Visit /settings to enable one.")
-    template = _pick_template(skills, slot)
+    prompts = load_prompts(data_dir)
+    template = prompts.get(slot) or prompts.get("review") or ""
+    if not template:
+        raise ValueError(
+            "No prompts configured. Visit /settings and save the prompts."
+        )
     pr = gh.get_pr(owner, name, number)
     files = gh.list_pr_files(owner, name, number)
     diff_text = _summarize_diff(files, max_files=30, max_lines=2000)
@@ -81,17 +84,6 @@ def assemble_review_prompt(
             "<paste the previous findings (one per line) so the LLM can mark each resolved/pending>"
         )
     return _render(template, pr_metadata)
-
-
-def _pick_template(skills: Iterable[Skill], slot: str) -> str:
-    for s in skills:
-        body = (s.prompts or {}).get(slot, "")
-        if body:
-            return body
-    # Fall back to the registered slot prompt of the first skill (even
-    # if empty) so the caller still gets a string back. The settings
-    # page enforces non-empty defaults via _default_prompts().
-    return (skills[0].prompts or {}).get(slot, "")
 
 
 def _summarize_diff(files, *, max_files: int, max_lines: int) -> str:
