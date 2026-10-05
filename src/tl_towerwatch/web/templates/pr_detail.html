@@ -68,15 +68,86 @@
       </div>
     </div>
 
-    {# Tabs (visual only). The 🤖 tl_towerwatch reviews tab was dropped in
-       v1.3.0 — there are no agent runs anymore. #}
-      <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;font-size:13px;">
-        <span style="padding:8px 14px;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;">Overview</span>
-        <span style="padding:8px 14px;color:var(--muted);">Commits ({{ commits_count }})</span>
-        <span style="padding:8px 14px;color:var(--muted);">Files ({{ pr.changed_files }})</span>
-        <span style="padding:8px 14px;color:var(--muted);">Reviews ({{ human_reviews_count }})</span>
-        <span style="padding:8px 14px;color:var(--muted);">Comments ({{ human_comments_count }})</span>
+    {# Tabs (active state). v1.3.x: every tab has its own section below.
+       Clicking a tab hides the others via inline JS — no reload. #}
+      <div role="tablist"
+           data-testid="pr-tabs"
+                style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;font-size:13px;">
+        <button type="button"
+                role="tab"
+                data-tab="overview"
+                data-testid="tab-overview"
+                style="border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--fg);border-bottom:2px solid var(--warning);font-weight:600;font-size:13px;">
+          Overview
+        </button>
+        <button type="button"
+                role="tab"
+                data-tab="commits"
+                data-testid="tab-commits"
+                style="border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;font-size:13px;">
+          Commits ({{ commits_count }})
+        </button>
+        <button type="button"
+                role="tab"
+                data-tab="files"
+                data-testid="tab-files"
+                style="border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;font-size:13px;">
+          Files ({{ pr.changed_files }})
+        </button>
+        <button type="button"
+                role="tab"
+                data-tab="reviews"
+                data-testid="tab-reviews"
+                style="border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;font-size:13px;">
+          Reviews ({{ human_reviews_count }})
+        </button>
+        <button type="button"
+                role="tab"
+                data-tab="comments"
+                data-testid="tab-comments"
+                style="border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;font-size:13px;">
+          Comments ({{ issue_comments_count }} convo + {{ human_comments_count }} en diff)
+        </button>
       </div>
+
+      {# Inline tab toggle. ``data-section="overview"`` rows live
+         immediately under their tab; switching a tab hides every other
+         section so the user sees one chunk at a time. State is
+         reflected in the URL hash so refreshes land on the same tab. #}
+      <script>
+        (function () {
+          var tabs = document.querySelectorAll('[role="tab"][data-tab]');
+          var sections = document.querySelectorAll('[data-section]');
+          function activate(name) {
+            tabs.forEach(function (t) {
+              var active = t.getAttribute('data-tab') === name;
+              t.style.color = active ? 'var(--fg)' : 'var(--muted)';
+              t.style.borderBottomColor = active ? 'var(--warning)' : 'transparent';
+              t.style.fontWeight = active ? '600' : '400';
+            });
+            sections.forEach(function (s) {
+              s.style.display = (s.getAttribute('data-section') === name) ? '' : 'none';
+            });
+            try { window.location.hash = '#tab=' + name; } catch (e) {}
+          }
+          tabs.forEach(function (t) {
+            t.addEventListener('click', function () { activate(t.getAttribute('data-tab')); });
+          });
+          // Honour ?tab=overview etc. on first paint.
+          var initial = (window.location.hash || '').match(/#tab=(\w+)/);
+          if (initial && initial[1]) {
+            activate(initial[1]);
+          }
+        })();
+      </script>
+
+    {# Overview tab — manual description + manual notes + the original
+       PR description. The reply banners above this block stay
+       visible across every tab (they confirm actions taken anywhere
+       on the page), but the overview body itself toggles with the
+       tab. #}
+    <div data-section="overview" data-testid="section-overview"
+         style="display:flex;flex-direction:column;gap:16px;">
 
     {# Manual description — author-only TL;DR for reviewers. v1.3.0
        replaced the old AI summary card. Editing is a textarea + save
@@ -130,10 +201,11 @@
     </div>
 
     {# PR description (the original, public-facing one from GitHub) #}
-    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;margin-bottom:16px;">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;margin-bottom:0;">
       <strong style="color:#c9d1d9;font-size:13px;">Descripción del PR (GitHub)</strong>
       <div style="font-size:13px;color:#c9d1d9;line-height:1.6;margin-top:8px;white-space:pre-wrap;">{{ pr.body or '(sin descripción)' }}</div>
     </div>
+    </div>{# /data-section="overview" #}
 
     {# Reply banners — short-lived confirmation after the user posts a
        reply from this page. The query param drives both visual state
@@ -164,6 +236,11 @@
       {% endif %}
     </div>
     {% endif %}
+
+    {# Comments tab — both the conversation (issue comments) and the
+       inline review-comment thread. #}
+    <div data-section="comments" data-testid="section-comments"
+         style="display:none;flex-direction:column;gap:12px;">
 
     {# ------------------------------------------------------------
        Conversación (issue comments) — GitHub-style timeline.
@@ -345,8 +422,11 @@
         <p style="color:var(--muted);font-size:13px;margin:0;">Sin review comments en el diff.</p>
       {% endif %}
     </div>
+    </div>{# /data-section="comments" #}
 
-    {# Reviews de humanos — top-level review state (APPROVE / REQUEST_CHANGES / COMMENT) #}
+    {# Reviews tab — top-level review state (APPROVE / REQUEST_CHANGES / COMMENT) #}
+    <div data-section="reviews" data-testid="section-reviews"
+         style="display:none;">
     <div data-testid="reviews-card"
          style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;">
       <strong style="color:#c9d1d9;font-size:13px;">Reviews de humanos</strong>
@@ -354,9 +434,18 @@
         <div style="margin-top:10px;font-size:13px;color:#c9d1d9;display:flex;flex-direction:column;gap:10px;">
           {% for r in human_reviews %}
             <div style="display:flex;gap:10px;">
-              <div style="width:28px;height:28px;border-radius:50%;background:#1f6f3b;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0;">{{ (r.reviewer_login[:2] | upper) }}</div>
+              <div style="width:28px;height:28px;border-radius:50%;background:#1f6f3b;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0;">
+                {% if r.reviewer_avatar_url %}
+                  <img src="{{ r.reviewer_avatar_url }}" alt="{{ r.reviewer_login }}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">
+                {% else %}
+                  {{ r.reviewer_login[:2] | upper }}
+                {% endif %}
+              </div>
               <div style="flex:1;">
                 <strong>{{ r.reviewer_login }}</strong>
+                {% if r.reviewer_display_name %}
+                <span style="color:var(--muted);font-size:11px;">{{ r.reviewer_display_name }}</span>
+                {% endif %}
                 <span style="color:var(--muted);">· {{ r.state }} · {{ r.submitted_at | hace }}</span>
                 {% if r.body %}
                   <div style="background:#1f242c;padding:8px;border-radius:4px;margin-top:4px;white-space:pre-wrap;">{{ r.body }}</div>
@@ -368,6 +457,126 @@
       {% else %}
         <p style="color:var(--muted);margin-top:10px;">Sin reviews humanos todavía.</p>
       {% endif %}
+    </div>
+    </div>{# /data-section="reviews" #}
+
+    {# Commits tab — full commit timeline synced from
+       GET /repos/.../pulls/{n}/commits. Renders avatar + author +
+       short SHA + first line of message + timestamp. The full
+       message is shown on hover via the ``title`` attribute. #}
+    <div data-section="commits" data-testid="section-commits"
+         style="display:none;">
+      <div data-testid="commits-card"
+           style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <strong style="color:var(--fg);font-size:13px;">🟦 Commits</strong>
+          <span style="color:var(--muted);font-size:11px;">{{ commits_count }} en este PR</span>
+        </div>
+        {% if pr_commits %}
+        <ol data-testid="commits-list"
+            style="margin:0;padding:0 0 0 4px;list-style:none;display:flex;flex-direction:column;gap:10px;">
+          {% for c in pr_commits %}
+          <li data-testid="commit-{{ c.sha[:7] }}"
+              style="display:flex;gap:10px;align-items:start;border-left:2px solid var(--border);padding-left:10px;">
+            <div style="width:26px;height:26px;border-radius:50%;background:var(--code-bg);border:1px solid var(--border);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--fg);font-weight:600;">
+              {% if c.author_avatar_url %}
+                <img src="{{ c.author_avatar_url }}" alt="{{ c.author_login }}" style="width:100%;height:100%;object-fit:cover;">
+              {% elif c.author_login %}
+                {{ c.author_login[:2] | upper }}
+              {% else %}
+                ·?
+              {% endif %}
+            </div>
+            <div style="flex:1;min-width:0;">
+              <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted);">
+                <a href="https://github.com/{{ owner }}/{{ name }}/commit/{{ c.sha }}"
+                   target="_blank" rel="noopener"
+                   data-testid="commit-sha"
+                   style="font-family:'SF Mono',Menlo,Consolas,monospace;color:var(--accent);text-decoration:none;font-size:11px;">
+                  {{ c.sha[:7] }}
+                </a>
+                {% if c.author_login %}
+                <strong style="color:var(--fg);font-size:12px;">{{ c.author_login }}</strong>
+                {% if c.author_display_name %}
+                <span style="font-size:11px;">{{ c.author_display_name }}</span>
+                {% endif %}
+                {% endif %}
+                {% if c.committed_at %}
+                <span>· {{ c.committed_at | hace }}</span>
+                {% endif %}
+              </div>
+              <div data-testid="commit-message"
+                   title="{{ c.message }}"
+                   style="font-size:13px;color:var(--fg);margin-top:4px;line-height:1.5;
+                          white-space:pre-wrap;
+                          display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">
+                {{ c.message }}
+              </div>
+            </div>
+          </li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p style="color:var(--muted);font-size:13px;margin:0;">Sin commits cargados. Refrescá el PR para sincronizar desde GitHub.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Files tab — per-file stats + diff snippet. Synced from
+       GET /repos/.../pulls/{n}/files. The snippet is rendered inside a
+       <details> so a 200-file PR doesn't blow up the page; only the
+       files the user actually opens load their patch into the DOM. #}
+    <div data-section="files" data-testid="section-files"
+         style="display:none;">
+      <div data-testid="files-card"
+           style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <strong style="color:var(--fg);font-size:13px;">📁 Files changed</strong>
+          <span style="color:var(--muted);font-size:11px;">
+            {{ pr_files | length }} archivos
+            · <span style="color:#3fb950;">+{{ pr.additions }}</span> /
+            <span style="color:#f85149;">−{{ pr.deletions }}</span> líneas
+          </span>
+        </div>
+        {% if pr_files %}
+        <ol data-testid="files-list"
+            style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;">
+          {% for f in pr_files %}
+          <li data-testid="file-{{ f.path | replace('/', '_') }}"
+              style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;">
+            <details>
+              <summary style="cursor:pointer;padding:8px 10px;display:flex;align-items:center;gap:8px;list-style:none;font-size:12px;">
+                <span style="font-family:'SF Mono',Menlo,Consolas,monospace;color:var(--fg);font-size:12px;flex:1;word-break:break-all;">
+                  {{ f.path }}
+                </span>
+                {% if f.status == 'added' %}
+                <span style="background:#3fb950;color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;">+ new</span>
+                {% elif f.status == 'removed' %}
+                <span style="background:#f85149;color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;">− removed</span>
+                {% elif f.status == 'renamed' %}
+                <span style="background:#a371f7;color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;">renamed</span>
+                {% else %}
+                <span style="background:var(--code-bg);color:var(--muted);padding:1px 6px;border-radius:10px;font-size:10px;">modified</span>
+                {% endif %}
+                <span style="color:#3fb950;font-family:monospace;">+{{ f.additions }}</span>
+                <span style="color:#f85149;font-family:monospace;">−{{ f.deletions }}</span>
+              </summary>
+              {% if f.patch %}
+              <pre data-testid="file-patch"
+                   style="background:var(--code-bg);padding:10px 12px;border-top:1px solid var(--border);font-family:'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.5;overflow:auto;margin:0;white-space:pre;color:var(--fg);max-height:340px;">{{ f.patch }}</pre>
+              {% else %}
+              <div style="background:var(--code-bg);padding:10px 12px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);">
+                Sin patch (binario / archivo muy grande / GitHub lo omitió).
+              </div>
+              {% endif %}
+            </details>
+          </li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <p style="color:var(--muted);font-size:13px;margin:0;">Sin archivos cargados. Refrescá el PR para sincronizar desde GitHub.</p>
+        {% endif %}
+      </div>
     </div>
 
   </div>

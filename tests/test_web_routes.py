@@ -2041,3 +2041,92 @@ def test_repos_config_page_404_for_unknown_repo(
     with TestClient(app) as c:
         r = c.get("/repos/nope/nada")
         assert r.status_code == 404
+
+
+def test_pr_detail_renders_commits_and_files_tabs(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: the PR detail page renders the Commits and Files tabs
+    with the synced data. Each tab is hidden by default (only
+    Overview is visible) and clicking the tab toggles its section
+    via inline JS.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import (
+        PRCommit, PRFile, PullRequest, Repo, User,
+    )
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        pr = PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+            additions=42, deletions=7, changed_files=2,
+            commits_count=17,
+        )
+        s.add(pr)
+        s.flush()
+        s.add(PRCommit(
+            pr_id=pr.id, sha="abc1234567890def",
+            message="feat: add the thing",
+            author_login="alice",
+            committed_at="2026-01-02T10:00:00Z",
+        ))
+        s.add(PRCommit(
+            pr_id=pr.id, sha="def4567890abcdef",
+            message="refactor: extract helper",
+            author_login="alice",
+            committed_at="2026-01-03T11:00:00Z",
+        ))
+        s.add(PRFile(
+            pr_id=pr.id, path="src/foo.py",
+            additions=30, deletions=5, status="modified",
+            patch="@@ -1,5 +1,7 @@\n+new line\n-old line",
+        ))
+        s.add(PRFile(
+            pr_id=pr.id, path="src/bar.py",
+            additions=12, deletions=2, status="added",
+            patch="@@ -0,0 +1,12 @@\n+brand new",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/pr/acme/alpha/1")
+        assert r.status_code == 200
+        body = r.text
+        # Tab buttons all rendered with their testids.
+        for tab in ("overview", "commits", "files", "reviews", "comments"):
+            assert f'data-testid="tab-{tab}"' in body
+        # Commits section rendered with both commits.
+        assert "data-testid=\"section-commits\"" in body
+        assert "data-testid=\"commit-abc1234\"" in body
+        assert "data-testid=\"commit-def4567\"" in body
+        assert "feat: add the thing" in body
+        assert "refactor: extract helper" in body
+        # Files section rendered with both files.
+        assert "data-testid=\"section-files\"" in body
+        assert "src/foo.py" in body
+        assert "src/bar.py" in body
+        # Status pill shows "+ new" for added files.
+        assert "+ new" in body
+        # Hidden by default — only Overview is visible.
+        assert "data-testid=\"section-overview\"" in body
+        # Inline toggle JS exists.
+        assert 'data-tab="overview"' in body
+        assert "activate(t.getAttribute('data-tab'))" in body

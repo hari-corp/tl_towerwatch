@@ -17,6 +17,8 @@ from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.db.models import (
     IssueComment,
+    PRCommit,
+    PRFile,
     PullRequest,
     Repo,
     Review,
@@ -768,6 +770,8 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
     human_reviews: list[Review] = []
     human_comments: list[ReviewComment] = []
     issue_comments: list[IssueComment] = []
+    pr_commits: list = []
+    pr_files: list = []
     # User rows keyed by login so the template can render avatars and
     # display names without hitting the DB per row.
     user_by_login: dict[str, User] = {}
@@ -799,10 +803,22 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
                     select(IssueComment).where(IssueComment.pr_id == pr.id)
                     .order_by(IssueComment.created_at.asc())
                 ).scalars())
+                # v1.3.x: fetch the full commit list + per-file stats for
+                # the new Commits / Files tabs. Cheap when the sync just
+                # ran (in-memory), zero network calls on a GET.
+                pr_commits = list(s.execute(
+                    select(PRCommit).where(PRCommit.pr_id == pr.id)
+                    .order_by(PRCommit.committed_at.asc().nulls_last())
+                ).scalars())
+                pr_files = list(s.execute(
+                    select(PRFile).where(PRFile.pr_id == pr.id)
+                    .order_by(PRFile.path.asc())
+                ).scalars())
                 # Pull every user we may need to render avatars in one shot.
                 logins = {r.reviewer_login for r in human_reviews} \
                     | {c.reviewer_login for c in human_comments} \
-                    | {c.author_login for c in issue_comments}
+                    | {c.author_login for c in issue_comments} \
+                    | {c.author_login for c in pr_commits if c.author_login}
                 if logins:
                     user_by_login = {
                         u.login: u for u in s.execute(
@@ -812,7 +828,12 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
                 human_reviews_count = len(human_reviews)
                 human_comments_count = len(human_comments)
                 issue_comments_count = len(issue_comments)
-                commits_count = getattr(pr, "commits_count", 0) or 0
+                # Prefer the live list count over the cached integer
+                # so a sync that fetched more commits than the last
+                # cached_at update reflects on the page immediately.
+                commits_count = max(
+                    len(pr_commits), getattr(pr, "commits_count", 0) or 0
+                )
     # Thread the comments: build per-issue-comment reply trees so the
     # template can render GitHub-style nested conversation. Replies
     # render under their parent (linked by GitHub's ``in_reply_to_id``).
@@ -833,6 +854,10 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
         u = user_by_login.get(r.reviewer_login)
         r.reviewer_avatar_url = getattr(u, "avatar_url", None)
         r.reviewer_display_name = getattr(u, "display_name", None)
+    for c in pr_commits:
+        u = user_by_login.get(c.author_login) if c.author_login else None
+        c.author_avatar_url = getattr(u, "avatar_url", None)
+        c.author_display_name = getattr(u, "display_name", None)
     reply_ok = request.query_params.get("ok") in ("reply", "reply_stale")
     reply_ok_partial = request.query_params.get("ok") == "reply_stale"
     reply_stale_reason = request.query_params.get("reason") if reply_ok_partial else ""
@@ -843,6 +868,8 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
          "human_reviews": human_reviews,
          "human_comments": human_comments,
          "issue_comments": issue_comments,
+         "pr_commits": pr_commits,
+         "pr_files": pr_files,
          "issue_threads": issue_threads,
          "review_threads": review_threads,
          "issue_comments_count": issue_comments_count,

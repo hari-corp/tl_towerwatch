@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from tl_towerwatch.db.database import Database
 from tl_towerwatch.db.models import (
     IssueComment,
+    PRCommit,
+    PRFile,
     PullRequest,
     Repo,
     Review,
@@ -86,11 +88,22 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
     return new
 
 
-def _replace_reviews_and_comments(
+def _replace_pr_subresources(
     s: Session, pr_id: int, gh: GitHubClient, owner: str, name: str, number: int
 ) -> None:
+    """Wipe and re-insert every per-PR subresource (reviews, review
+    comments, conversation comments, commits, files).
+
+    The schema's missing key for FK enforcement: every commit's
+    ``author_login`` must exist in ``users`` before the commit inserts.
+    Same for the other author-referencing rows. ``_upsert_user``
+    handles that for each row we see coming back from GitHub.
+    """
     s.query(Review).filter(Review.pr_id == pr_id).delete()
     s.query(ReviewComment).filter(ReviewComment.pr_id == pr_id).delete()
+    s.query(IssueComment).filter(IssueComment.pr_id == pr_id).delete()
+    s.query(PRCommit).filter(PRCommit.pr_id == pr_id).delete()
+    s.query(PRFile).filter(PRFile.pr_id == pr_id).delete()
     s.query(IssueComment).filter(IssueComment.pr_id == pr_id).delete()
     for r in gh.list_reviews(owner, name, number):
         _upsert_user(
@@ -144,6 +157,44 @@ def _replace_reviews_and_comments(
                 in_reply_to_id=c.in_reply_to_id,
             )
         )
+    # Commits — store the full message + committed_at so the
+    # "Commits" tab can render a timeline without an extra GitHub
+    # round-trip. Author login may be null (signed-off but no GitHub
+    # account attached); we still want the commit to show.
+    for c in gh.list_pr_commits(owner, name, number):
+        if c.author_login:
+            _upsert_user(
+                s,
+                c.author_login,
+                avatar_url=c.author_avatar_url,
+                display_name=c.author_display_name,
+            )
+        s.add(
+            PRCommit(
+                pr_id=pr_id,
+                sha=c.sha,
+                message=c.message,
+                author_login=c.author_login,
+                committed_at=c.committed_at,
+            )
+        )
+    # Files — store path / +/- / status / patch so the "Files" tab
+    # can render a stat-list with snippet preview. We only keep files
+    # that have a path (some GitHub responses omit it for binary or
+    # rename-only entries).
+    for f in gh.list_pr_files(owner, name, number):
+        if not f.path:
+            continue
+        s.add(
+            PRFile(
+                pr_id=pr_id,
+                path=f.path,
+                additions=int(f.additions or 0),
+                deletions=int(f.deletions or 0),
+                status=f.status or "",
+                patch=f.patch,
+            )
+        )
 
 
 def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
@@ -162,7 +213,7 @@ def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
         for pr in gh.list_repo_prs(repo.owner, repo.name, state="all"):
             row = _upsert_pr(s, repo.id, pr)
             s.flush()
-            _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, pr.number)
+            _replace_pr_subresources(s, row.id, gh, repo.owner, repo.name, pr.number)
             count += 1
         # Re-fetch the repo row in the current session before mutating: callers
         # typically pass a Repo loaded by an earlier `list_repos(db)` call, so
@@ -189,7 +240,7 @@ def sync_one_pr(
     with db.session() as s:
         pr = gh.get_pr(repo.owner, repo.name, number)
         row = _upsert_pr(s, repo.id, pr)
-        _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, number)
+        _replace_pr_subresources(s, row.id, gh, repo.owner, repo.name, number)
         return row
 
 

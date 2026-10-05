@@ -225,13 +225,19 @@ class GitHubClient:
 
     def list_pr_commits(self, owner: str, name: str, number: int) -> list[CommitData]:
         d = self._check(self._client.get(f"/repos/{owner}/{name}/pulls/{number}/commits"))
-        return [
-            CommitData(
+        out: list[CommitData] = []
+        for c in d:
+            author = c.get("author") or {}
+            commit_meta = c.get("commit", {})
+            out.append(CommitData(
                 sha=c["sha"],
-                message=c["commit"]["message"],
-                author_login=(c.get("author") or {}).get("login"),
-            ) for c in d
-        ]
+                message=commit_meta.get("message", ""),
+                author_login=author.get("login"),
+                author_avatar_url=author.get("avatar_url"),
+                author_display_name=author.get("name"),
+                committed_at=commit_meta.get("author", {}).get("date"),
+            ))
+        return out
 
     @staticmethod
     def _parse_pr(pr: dict) -> PullRequestData:

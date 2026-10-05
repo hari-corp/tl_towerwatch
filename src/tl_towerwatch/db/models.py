@@ -118,6 +118,36 @@ class IssueComment(Base):
     __table_args__ = (Index("idx_issue_comments_pr", "pr_id"),)
 
 
+class PRCommit(Base):
+    """One row per commit on a PR. Synced from
+    ``GET /repos/.../pulls/{n}/commits`` so the PR detail "Commits"
+    tab can render the full list without an extra GitHub round-trip."""
+    __tablename__ = "pr_commits"
+    id = Column(Integer, primary_key=True)
+    pr_id = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    sha = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    author_login = Column(String, ForeignKey("users.login"))
+    committed_at = Column(String)
+    __table_args__ = (Index("idx_pr_commits_pr", "pr_id"),)
+
+
+class PRFile(Base):
+    """One row per file changed in a PR. Synced from
+    ``GET /repos/.../pulls/{n}/files``. The ``patch`` column holds the
+    diff snippet (capped by GitHub; large files come back without one).
+    """
+    __tablename__ = "pr_files"
+    id = Column(Integer, primary_key=True)
+    pr_id = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    path = Column(String, nullable=False)
+    additions = Column(Integer, nullable=False, default=0)
+    deletions = Column(Integer, nullable=False, default=0)
+    status = Column(String)
+    patch = Column(Text)
+    __table_args__ = (Index("idx_pr_files_pr", "pr_id"),)
+
+
 class PRSummary(Base):
     __tablename__ = "pr_summaries"
     pr_id = Column(Integer, ForeignKey("pull_requests.id"), primary_key=True)

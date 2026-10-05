@@ -82,10 +82,14 @@ def test_sync_repo_applies_allowed_authors(tmp_path: Path):
              "updated_at": "2026-01-01T00:00:00Z", "requested_reviewers": []},
         ])
     )
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/2/reviews").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/2/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/2/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/2/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/issues/2/comments").mock(return_value=Response(200, json=[]))
     with GitHubClient(token="x") as gh:
@@ -115,6 +119,8 @@ def test_sync_repo_populates_user_avatar_and_display_name(tmp_path: Path):
               "updated_at": "2026-01-01T00:00:00Z", "requested_reviewers": []},
         ])
     )
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
@@ -147,6 +153,8 @@ def test_sync_repo_persists_last_fetch_metadata(tmp_path: Path):
              "updated_at": "2026-01-01T00:00:00Z", "requested_reviewers": []},
         ])
     )
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
@@ -173,6 +181,8 @@ def test_sync_one_pr_upserts_and_refreshes(tmp_path: Path):
             "updated_at": "2026-02-01T00:00:00Z", "requested_reviewers": [],
         })
     )
+    respx.get("https://api.github.com/repos/o/n/pulls/7/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/7/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/7/reviews").mock(
         return_value=Response(200, json=[
             {"user": {"login": "luis.f"}, "state": "APPROVED",
@@ -200,6 +210,8 @@ def test_sync_one_pr_upserts_and_refreshes(tmp_path: Path):
             "updated_at": "2026-02-03T00:00:00Z", "requested_reviewers": [],
         })
     )
+    respx.get("https://api.github.com/repos/o/n/pulls/7/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/7/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/7/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/7/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/issues/7/comments").mock(return_value=Response(200, json=[]))
@@ -420,6 +432,8 @@ def test_save_manual_description_persists(tmp_path):
                    "created_at": "2026-01-01T00:00:00Z",
                    "updated_at": "2026-01-01T00:00:00Z",
                    "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
         return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
@@ -456,6 +470,8 @@ def test_save_manual_notes_persists(tmp_path):
                    "created_at": "2026-01-01T00:00:00Z",
                    "updated_at": "2026-01-01T00:00:00Z",
                    "requested_reviewers": []}))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
         return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
@@ -513,6 +529,8 @@ def test_sync_repo_picks_up_state_transitions(tmp_path):
              "requested_reviewers": []},
         ]))
     # Reviews + comments + files + commits endpoints
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
         return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(

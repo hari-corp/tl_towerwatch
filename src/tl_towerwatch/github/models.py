@@ -91,6 +91,9 @@ class CommitData:
     sha: str
     message: str
     author_login: str | None
+    author_avatar_url: str | None = None
+    author_display_name: str | None = None
+    committed_at: str | None = None
 
 @dataclass
 class RateLimit:
