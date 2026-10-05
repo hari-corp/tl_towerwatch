@@ -211,6 +211,15 @@ def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
     count = 0
     with db.session() as s:
         for pr in gh.list_repo_prs(repo.owner, repo.name, state="all"):
+            # The list endpoint omits additions / deletions / changed_files /
+            # commits. Fetch the per-PR payload so the dashboard tab
+            # counts (``changed_files`` etc.) match what the PR detail
+            # page actually shows. Without this the counts stuck at 0
+            # because ``_parse_pr`` defaulted them to 0.
+            try:
+                pr = gh.get_pr(repo.owner, repo.name, pr.number)
+            except Exception:  # noqa: BLE001 — fall back to list payload
+                pass
             row = _upsert_pr(s, repo.id, pr)
             s.flush()
             _replace_pr_subresources(s, row.id, gh, repo.owner, repo.name, pr.number)

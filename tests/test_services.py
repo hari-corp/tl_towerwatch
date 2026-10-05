@@ -595,3 +595,66 @@ def test_list_prs_for_dashboard_state_filter(tmp_path):
     # state=all → all three
     all_prs = list_prs_for_dashboard(db, login="a", scope_filter="all", state_filter="all")
     assert {p.number for p in all_prs} == {1, 2, 3}
+
+
+@respx.mock
+def test_sync_repo_populates_changed_files_from_per_pr_fetch(tmp_path):
+    """v1.3.x regression: ``sync_repo`` fetches ``/pulls/{n}`` per PR
+    so ``changed_files`` / ``additions`` / ``deletions`` /
+    ``commits_count`` get populated. Without this fix the dashboard
+    tab count for ``Files`` would always read 0 even when the PR
+    detail page actually had file changes.
+    """
+    from sqlalchemy import select as _select
+    from tl_towerwatch.db.models import PullRequest, Repo
+    from tl_towerwatch.services.pull_requests import sync_repo
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    repo = list_repos(db)[0]
+    # List endpoint: no stats fields.
+    respx.get("https://api.github.com/repos/o/n/pulls",
+              params={"state": "all", "per_page": 100, "page": 1}).mock(
+        return_value=Response(200, json=[
+            {"number": 1, "title": "feat", "body": "b",
+             "user": {"login": "a"}, "state": "open",
+             "draft": False, "head": {"sha": "s1"},
+             "base": {"ref": "main"}, "html_url": "u",
+             "merged_at": None,
+             "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-01-01T00:00:00Z",
+             "requested_reviewers": []},
+        ]))
+    # Per-PR endpoint: carries the real stats.
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(
+        return_value=Response(200, json={
+            "number": 1, "title": "feat", "body": "b",
+            "user": {"login": "a"}, "state": "open",
+            "draft": False, "head": {"sha": "s1"},
+            "base": {"ref": "main"}, "html_url": "u",
+            "merged_at": None,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "requested_reviewers": [],
+            "additions": 42, "deletions": 7,
+            "changed_files": 3, "commits": 5,
+        }))
+    # Reviews / comments / commits / files — return empty so the
+    # sub-resource pass runs without hitting unmocked endpoints.
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/commits").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(
+        return_value=Response(200, json=[]))
+    with GitHubClient(token="x") as gh:
+        sync_repo(db, gh, repo)
+    with db.session() as s:
+        row = s.execute(_select(PullRequest).where(PullRequest.number == 1)).scalar_one()
+        assert row.changed_files == 3, f"expected changed_files=3, got {row.changed_files}"
+        assert row.additions == 42
+        assert row.deletions == 7
+        assert row.commits_count == 5
