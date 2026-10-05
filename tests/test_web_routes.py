@@ -2130,3 +2130,66 @@ def test_pr_detail_renders_commits_and_files_tabs(
         # Inline toggle JS exists.
         assert 'data-tab="overview"' in body
         assert "activate(t.getAttribute('data-tab'))" in body
+
+
+def test_pr_detail_tab_script_runs_after_sections(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x regression: the tab toggle script must appear AFTER all
+    the data-section divs in the rendered HTML, otherwise
+    ``document.querySelectorAll('[data-section]')`` runs before the
+    sections exist in the DOM and the NodeList is empty — clicking a
+    tab then has nothing to hide/show.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/pr/acme/alpha/1")
+        assert r.status_code == 200
+        body = r.text
+    # Find the byte offset of the tab toggle script specifically (it
+    # uses ``data-section`` in its body) and the last data-section
+    # div. The script must come after the last section so the
+    # NodeList it queries isn't empty.
+    import re
+    # Match the IIFE pattern that contains the data-section query.
+    script_matches = list(re.finditer(
+        r"<script>[^<]*document\.querySelectorAll\('\[data-section\]'\)", body
+    ))
+    assert script_matches, "no tab toggle script found in the rendered HTML"
+    section_offsets = [
+        m.start() for m in re.finditer(r'data-section="(overview|commits|files|reviews|comments)"', body)
+    ]
+    assert len(section_offsets) == 5, f"expected 5 sections, got {len(section_offsets)}"
+    last_section = max(section_offsets)
+    script_at = script_matches[0].start()
+    assert script_at > last_section, (
+        f"tab toggle script at offset {script_at} must run AFTER the last "
+        f"section at offset {last_section}, otherwise querySelectorAll('"
+        f"[data-section]') finds nothing"
+    )

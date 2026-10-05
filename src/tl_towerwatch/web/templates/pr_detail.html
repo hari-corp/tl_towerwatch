@@ -110,35 +110,7 @@
         </button>
       </div>
 
-      {# Inline tab toggle. ``data-section="overview"`` rows live
-         immediately under their tab; switching a tab hides every other
-         section so the user sees one chunk at a time. State is
-         reflected in the URL hash so refreshes land on the same tab. #}
-      <script>
-        (function () {
-          var tabs = document.querySelectorAll('[role="tab"][data-tab]');
-          var sections = document.querySelectorAll('[data-section]');
-          function activate(name) {
-            tabs.forEach(function (t) {
-              var active = t.getAttribute('data-tab') === name;
-              t.style.color = active ? 'var(--fg)' : 'var(--muted)';
-              t.style.borderBottomColor = active ? 'var(--warning)' : 'transparent';
-              t.style.fontWeight = active ? '600' : '400';
-            });
-            sections.forEach(function (s) {
-              s.style.display = (s.getAttribute('data-section') === name) ? '' : 'none';
-            });
-            try { window.location.hash = '#tab=' + name; } catch (e) {}
-          }
-          tabs.forEach(function (t) {
-            t.addEventListener('click', function () { activate(t.getAttribute('data-tab')); });
-          });
-          // Honour ?tab=overview etc. on first paint.
-          var initial = (window.location.hash || '').match(/#tab=(\w+)/);
-          if (initial && initial[1]) {
-            activate(initial[1]);
-          }
-        })();
+      {# tab toggle script moved below the sections #}
       </script>
 
     {# Overview tab — manual description + manual notes + the original
@@ -580,6 +552,46 @@
     </div>
 
   </div>
+
+  <script>
+    /* Tab toggle for the PR detail page. v1.3.x: this script must
+       run AFTER the sections are in the DOM (it was previously
+       running right after the tabs and finding an empty NodeList for
+       sections, so click handlers had nothing to flip). */
+    (function () {
+      var tabs = document.querySelectorAll('[role="tab"][data-tab]');
+      var sections = document.querySelectorAll('[data-section]');
+      function activate(name) {
+        if (!name) return;
+        tabs.forEach(function (t) {
+          var active = t.getAttribute('data-tab') === name;
+          t.style.color = active ? 'var(--fg)' : 'var(--muted)';
+          t.style.borderBottomColor = active ? 'var(--warning)' : 'transparent';
+          t.style.fontWeight = active ? '600' : '400';
+          t.style.background = 'transparent';
+        });
+        sections.forEach(function (s) {
+          var matches = s.getAttribute('data-section') === name;
+          // Toggle via the inline style so we override the default
+          // ``display:none`` set by the template for inactive sections.
+          s.style.display = matches ? '' : 'none';
+        });
+        try { history.replaceState(null, '', '#tab=' + name); } catch (e) {}
+      }
+      tabs.forEach(function (t) {
+        t.addEventListener('click', function () {
+          activate(t.getAttribute('data-tab'));
+        });
+      });
+      // Honour #tab=<name> on first paint so a refresh lands on
+      // the same tab the user was on.
+      var initial = (window.location.hash || '').match(/#tab=(\w+)/);
+      if (initial && initial[1] &&
+          document.querySelector('[data-section="' + initial[1] + '"]')) {
+        activate(initial[1]);
+      }
+    })();
+  </script>
 
   {# ===== RIGHT: Prompt viewer (sticky) ===== #}
   <div id="prompt-viewer"
