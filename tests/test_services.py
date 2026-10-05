@@ -70,7 +70,7 @@ def test_sync_repo_applies_allowed_authors(tmp_path: Path):
     add_repo(db, "o", "n")
     set_allowed_authors(db, "o", "n", ["marta.g"])
     respx.get("https://api.github.com/repos/o/n/pulls",
-              params={"state": "open", "per_page": 100, "page": 1}).mock(
+              params={"state": "all", "per_page": 100, "page": 1}).mock(
         return_value=Response(200, json=[
             {"number": 1, "title": "a", "body": None, "user": {"login": "marta.g"},
              "state": "open", "draft": False, "head": {"sha": "s1"}, "base": {"ref": "main"},
@@ -106,7 +106,7 @@ def test_sync_repo_populates_user_avatar_and_display_name(tmp_path: Path):
     db = _setup(tmp_path)
     add_repo(db, "o", "n")
     respx.get("https://api.github.com/repos/o/n/pulls",
-              params={"state": "open", "per_page": 100, "page": 1}).mock(
+              params={"state": "all", "per_page": 100, "page": 1}).mock(
         return_value=Response(200, json=[
             {"number": 1, "title": "a", "body": None,
               "user": {"login": "marta.g", "avatar_url": "https://x/m.png", "name": "Marta G"},
@@ -139,7 +139,7 @@ def test_sync_repo_persists_last_fetch_metadata(tmp_path: Path):
     db = _setup(tmp_path)
     add_repo(db, "o", "n")
     respx.get("https://api.github.com/repos/o/n/pulls",
-              params={"state": "open", "per_page": 100, "page": 1}).mock(
+              params={"state": "all", "per_page": 100, "page": 1}).mock(
         return_value=Response(200, json=[
             {"number": 1, "title": "a", "body": None, "user": {"login": "marta.g"},
              "state": "open", "draft": False, "head": {"sha": "s1"}, "base": {"ref": "main"},
@@ -469,3 +469,111 @@ def test_save_manual_notes_persists(tmp_path):
             PullRequest.repo_id == repo.id, PullRequest.number == 1
         )).scalar_one()
         assert pr.manual_notes == "release notes"
+
+
+@respx.mock
+def test_sync_repo_picks_up_state_transitions(tmp_path):
+    """v1.3.x: when a PR was open locally but got closed (or merged)
+    on GitHub, ``sync_repo`` updates the local row to the new state
+    so the dashboard filter / state badge reflect reality.
+
+    The old code only fetched ``state=open`` from GitHub, so closed
+    PRs were never seen and the local row stayed "open" forever.
+    """
+    from tl_towerwatch.db.models import PullRequest, Repo
+    from tl_towerwatch.services.pull_requests import sync_repo
+    from sqlalchemy import select as _select
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    repo = list_repos(db)[0]
+    # Local cache: PR #1 is "open" (last sync was yesterday).
+    from tl_towerwatch.db.models import User as _User
+    with db.session() as sess:
+        sess.add(_User(login="a"))
+    with db.session() as sess:
+        sess.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="a", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    # GitHub now reports the PR as closed + merged. ``merged_at`` is
+    # set on the response so we can distinguish merged from closed.
+    respx.get("https://api.github.com/repos/o/n/pulls", params={"state":"all","per_page":100,"page":1}).mock(
+        return_value=Response(200, json=[
+            {"number": 1, "title": "feat", "body": "b",
+             "user": {"login": "a"}, "state": "closed",
+             "draft": False, "head": {"sha": "abc"},
+             "base": {"ref": "main"}, "html_url": "https://x/1",
+             "merged_at": "2026-02-15T12:00:00Z",
+             "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-02-15T12:00:00Z",
+             "requested_reviewers": []},
+        ]))
+    # Reviews + comments + files + commits endpoints
+    respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
+        return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(
+        return_value=Response(200, json=[]))
+    with GitHubClient(token="x") as gh:
+        sync_repo(db, gh, repo)
+    with db.session() as s:
+        row = s.execute(_select(PullRequest).where(PullRequest.number == 1)).scalar_one()
+        assert row.state == "closed", f"expected state=closed, got {row.state!r}"
+        assert row.merged_at == "2026-02-15T12:00:00Z"
+
+
+def test_list_prs_for_dashboard_state_filter(tmp_path):
+    """v1.3.x: ``list_prs_for_dashboard`` honours the state arg so the
+    dashboard filter surfaces the right rows."""
+    db = _setup(tmp_path)
+    add_repo(db, "o", "n")
+    repo = list_repos(db)[0]
+    from tl_towerwatch.db.models import PullRequest, User as _User2
+    from tl_towerwatch.services.pull_requests import list_prs_for_dashboard
+    # User row first so the FK on pull_requests.author_login resolves.
+    with db.session() as s:
+        s.add(_User2(login="a"))
+        s.flush()
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="open", body="b",
+            author_login="a", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+        s.add(PullRequest(
+            repo_id=repo.id, number=2, title="merged", body="b",
+            author_login="a", state="closed", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/2",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-02-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+            merged_at="2026-02-01T00:00:00Z",
+        ))
+        s.add(PullRequest(
+            repo_id=repo.id, number=3, title="closed", body="b",
+            author_login="a", state="closed", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/3",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-02-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+            merged_at=None,  # plain closed, not merged
+        ))
+    open_prs = list_prs_for_dashboard(db, login="a", scope_filter="all", state_filter="open")
+    assert {p.number for p in open_prs} == {1}
+    # state=merged → only PR #2
+    merged_prs = list_prs_for_dashboard(db, login="a", scope_filter="all", state_filter="merged")
+    assert {p.number for p in merged_prs} == {2}
+    # state=closed → only PR #3 (not merged)
+    closed_prs = list_prs_for_dashboard(db, login="a", scope_filter="all", state_filter="closed")
+    assert {p.number for p in closed_prs} == {3}
+    # state=all → all three
+    all_prs = list_prs_for_dashboard(db, login="a", scope_filter="all", state_filter="all")
+    assert {p.number for p in all_prs} == {1, 2, 3}

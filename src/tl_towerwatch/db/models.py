@@ -59,6 +59,10 @@ class PullRequest(Base):
     deletions = Column(Integer, nullable=False, default=0)
     changed_files = Column(Integer, nullable=False, default=0)
     commits_count = Column(Integer, nullable=False, default=0)
+    # ``merged_at`` distinguishes a "merged" PR from a plain "closed"
+    # one — ``state`` is "closed" for both, the timestamp tells them
+    # apart. None while the PR is still open.
+    merged_at = Column(String)
     # User-authored content. Both fields are free-form text; ``manual_description``
     # is a TL;DR the author writes for reviewers (replaces the old AI summary),
     # ``manual_notes`` is internal context (release notes, things-to-remember).

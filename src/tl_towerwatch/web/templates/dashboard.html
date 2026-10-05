@@ -38,7 +38,8 @@
       {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
       {% set q_part %}{% if q %}&q={{ q }}{% endif %}{% endset %}
       {% set sort_part %}{% if sort and sort != 'updated_desc' %}&sort={{ sort }}{% endif %}{% endset %}
-      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ sort_part }}"
+      {% set state_part %}{% if state and state != 'open' %}&state={{ state }}{% endif %}{% endset %}
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ sort_part }}{{ state_part }}"
          style="{% if scope == tab_id %}background:var(--code-bg);color:var(--fg);font-weight:600;{% else %}color:var(--muted);{% endif %}padding:5px 12px;border-radius:5px;text-decoration:none;">
         {{ tab_label }}{% if scope == tab_id %} ({{ prs|length }}){% endif %}
       </a>
@@ -60,22 +61,50 @@
       {% set title_next %}{% if sort == 'title' %}updated_desc{% else %}title{% endif %}{% endset %}
       {% set title_label %}title A→Z{% endset %}
       {% set title_part %}{% if title_next != 'updated_desc' %}&sort={{ title_next }}{% endif %}{% endset %}
-      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ updated_part }}"
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ updated_part }}{% if state and state != 'open' %}&state={{ state }}{% endif %}"
          style="{% if sort == 'updated_desc' or sort == 'updated_asc' %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
         {{ updated_label }}
       </a>
-      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ created_part }}"
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ created_part }}{% if state and state != 'open' %}&state={{ state }}{% endif %}"
          style="{% if sort == 'created_desc' or sort == 'created_asc' %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
         {{ created_label }}
       </a>
-      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ title_part }}"
+      <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ title_part }}{% if state and state != 'open' %}&state={{ state }}{% endif %}"
          style="{% if sort == 'title' %}color:var(--accent);font-weight:600;{% else %}color:var(--muted);{% endif %}text-decoration:none;">
         {{ title_label }}
       </a>
     </div>
   </div>
+  {# ------------------------------------------------------------
+         State filter (open / closed / merged / all). v1.3.x: the
+         scheduler now syncs closed and merged PRs too, so the
+         user can drill into them from here. Default is "open"
+         so the default "Attention / My PRs" views stay clean.
+         ------------------------------------------------------------ #}
+  <div data-testid="state-filter"
+       style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);">
+    <span>state:</span>
+    {% set scope_part %}{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}{% endset %}
+    {% set repo_part %}{% if repo %}&repo={{ repo }}{% endif %}{% endset %}
+    {% set author_part %}{% if author %}&author={{ author }}{% endif %}{% endset %}
+    {% set q_part %}{% if q %}&q={{ q }}{% endif %}{% endset %}
+    {% set sort_part %}{% if sort and sort != 'updated_desc' %}&sort={{ sort }}{% endif %}{% endset %}
+    {% for value, label, color in [
+      ('open',   '🟢 open',   'var(--success)'),
+      ('closed', '⛔ closed', 'var(--danger)'),
+      ('merged', '🟣 merged', 'var(--accent)'),
+      ('all',    '🌐 all',    'var(--muted)'),
+    ] %}
+    <a href="/?{{ scope_part }}{{ repo_part }}{{ author_part }}{{ q_part }}{{ sort_part }}{% if value != 'open' %}&state={{ value }}{% endif %}"
+       data-testid="state-tab-{{ value }}"
+       style="{% if state == value %}background:{{ color }}22;color:{{ color }};border:1px solid {{ color }};font-weight:600;{% else %}background:var(--code-bg);color:var(--muted);border:1px solid var(--border);{% endif %}padding:3px 10px;border-radius:5px;text-decoration:none;font-size:11px;">
+      {{ label }}
+    </a>
+    {% endfor %}
+  </div>
   <form method="get" action="/" style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin:0;">
     <input type="hidden" name="scope" value="{{ scope }}">
+    <input type="hidden" name="state" value="{{ state }}">
     <input type="hidden" name="sort" value="{{ sort }}">
     <span>Filter by:</span>
     <select name="repo" onchange="this.form.submit()"
@@ -99,7 +128,7 @@
             style="background:var(--accent);color:#fff;border:0;padding:4px 12px;border-radius:5px;font-size:12px;cursor:pointer;">
       Apply
     </button>
-    {% if repo or author or q %}
+    {% if repo or author or q or state != 'open' %}
     <a href="/?{% if scope and scope != 'attention' %}scope={{ scope }}{% endif %}"
        style="color:var(--muted);text-decoration:none;font-size:12px;">
       ✕ clear filters
@@ -122,6 +151,26 @@
     <div style="display:flex;align-items:start;gap:12px;">
       <div style="flex:1;">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:var(--muted);flex-wrap:wrap;">
+          {# PR state badge — the scheduler now syncs closed/merged
+             too, and the user filters by state, so we surface the
+             state prominently so a closed/merged PR is never confused
+             with one that's still pending. #}
+          {% if pr.state == 'closed' and pr.merged_at %}
+          <span data-testid="pr-state-badge"
+                style="background:#a371f7;color:#fff;padding:2px 8px;border-radius:10px;font-weight:600;">
+            🟣 MERGED
+          </span>
+          {% elif pr.state == 'closed' %}
+          <span data-testid="pr-state-badge"
+                style="background:#f85149;color:#fff;padding:2px 8px;border-radius:10px;font-weight:600;">
+            ⛔ CLOSED
+          </span>
+          {% elif pr.state == 'open' %}
+          <span data-testid="pr-state-badge"
+                style="background:#3fb950;color:#fff;padding:2px 8px;border-radius:10px;font-weight:600;">
+            🟢 OPEN
+          </span>
+          {% endif %}
           <span style="background:var(--code-bg);padding:2px 8px;border-radius:10px;">{{ pr.repo_owner }}/{{ pr.repo_name }}</span>
           <span>#{{ pr.number }}</span>
           <span>·</span>

@@ -54,7 +54,7 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
             "title", "body", "author_login", "state", "draft",
             "head_sha", "base_ref", "html_url", "created_at", "updated_at",
             "additions", "deletions", "changed_files", "commits_count",
-            "manual_description", "manual_notes",
+            "merged_at", "manual_description", "manual_notes",
         ):
             setattr(existing, f, getattr(pr, f, getattr(existing, f, None)))
         existing.cached_at = now_iso()
@@ -77,6 +77,7 @@ def _upsert_pr(s: Session, repo_id: int, pr) -> PullRequest:
         deletions=pr.deletions,
         changed_files=pr.changed_files,
         commits_count=pr.commits_count,
+        merged_at=getattr(pr, "merged_at", None),
         manual_description=getattr(pr, "manual_description", None),
         manual_notes=getattr(pr, "manual_notes", None),
     )
@@ -146,16 +147,19 @@ def _replace_reviews_and_comments(
 
 
 def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
-    """Sync every open PR for ``repo`` from GitHub into the local cache.
+    """Sync every PR for ``repo`` from GitHub into the local cache.
 
-    v1.3.0: dropped the ``llm`` parameter — tl_towerwatch no longer runs
-    an agent. The sync only persists PR metadata, review state, and
-    comments. The user generates summaries by hand via the manual
-    description / notes fields on each PR card or the PR detail page.
+    v1.3.x: fetches all PRs (open + closed + merged) so state
+    transitions get picked up. The old ``list_open_prs``-only loop
+    missed the open→closed/merged transition entirely (GitHub's
+    ``state=open`` filter omits closed PRs), so a PR closed on
+    GitHub would forever read as "open" in the local cache. The
+    pagination guard stops at 2,000 PRs per repo which is plenty
+    for any real project.
     """
     count = 0
     with db.session() as s:
-        for pr in gh.list_open_prs(repo.owner, repo.name):
+        for pr in gh.list_repo_prs(repo.owner, repo.name, state="all"):
             row = _upsert_pr(s, repo.id, pr)
             s.flush()
             _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, pr.number)
@@ -302,11 +306,18 @@ def list_prs_for_dashboard(
     login: str,
     scope_filter: str,
     allowed_authors_filter: list[str] | None = None,
+    state_filter: str = "open",
 ) -> list[PullRequest]:
     """Return PRs visible on the dashboard given the current filters.
 
-    Filter order follows spec §12: `scope_filter` is applied first, then
-    `allowed_authors_filter`.
+    Filter order follows spec §12: ``scope_filter`` is applied first,
+    then ``allowed_authors_filter``, then ``state_filter``.
+
+    ``state_filter`` accepts:
+    - ``"open"`` (default) — only ``state == "open"`` PRs
+    - ``"closed"`` — only closed, not merged
+    - ``"merged"`` — only closed AND ``merged_at`` is set
+    - ``"all"`` — no state filter
     """
     with db.session() as s:
         rows: list[PullRequest] = list(s.execute(select(PullRequest)).scalars())
@@ -338,6 +349,19 @@ def list_prs_for_dashboard(
         if allowed_authors_filter:
             allowed = set(normalize_authors(allowed_authors_filter))
             rows = [p for p in rows if (p.author_login or "").lower() in allowed]
+
+        # State filter — runs after the scope/author filters so the
+        # "open" count matches what the user actually sees on the
+        # dashboard when they switch tabs.
+        if state_filter == "open":
+            rows = [p for p in rows if p.state == "open"]
+        elif state_filter == "closed":
+            rows = [p for p in rows
+                    if p.state == "closed" and not p.merged_at]
+        elif state_filter == "merged":
+            rows = [p for p in rows
+                    if p.state == "closed" and p.merged_at]
+        # "all" or unknown -> no extra filter
 
         rows.sort(key=lambda p: p.updated_at, reverse=True)
         return rows

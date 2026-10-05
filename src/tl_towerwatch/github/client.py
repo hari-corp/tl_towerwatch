@@ -103,9 +103,38 @@ class GitHubClient:
                 break
             for pr in d:
                 out.append(self._parse_pr(pr))
+        return out
+
+    def list_repo_prs(self, owner: str, name: str,
+                       state: str = "all") -> list[PullRequestData]:
+        """List every PR in the repo (open + closed + merged).
+
+        GitHub's ``state=all`` returns closed PRs that were either
+        merged or just closed; the ``merged_at`` field on each PR
+        disambiguates the two. We paginate because the listing is
+        unbounded.
+
+        v1.3.x: replaces the old ``list_open_prs``-only sync loop so
+        state changes (open → closed → merged) get picked up the next
+        time the scheduler ticks. The per-PR refresh path is
+        unchanged.
+        """
+        out: list[PullRequestData] = []
+        page = 1
+        while True:
+            d = self._check(self._client.get(
+                f"/repos/{owner}/{name}/pulls",
+                params={"state": state, "per_page": 100, "page": page},
+            ))
+            if not d:
+                break
+            for pr in d:
+                out.append(self._parse_pr(pr))
             if len(d) < 100:
                 break
             page += 1
+            if page > 20:  # safety stop — 2000 PRs per repo is plenty
+                break
         return out
 
     def get_pr(self, owner: str, name: str, number: int) -> PullRequestData:
@@ -232,4 +261,7 @@ class GitHubClient:
             deletions=pr.get("deletions", 0),
             changed_files=pr.get("changed_files", 0),
             commits_count=pr.get("commits", 0),
+            # merged_at is null while open and on plain "closed" PRs; it
+            # is set to a timestamp on merged PRs.
+            merged_at=pr.get("merged_at"),
         )

@@ -232,6 +232,7 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request,
           scope: str = "attention",
+          state: str = "open",
           repo: str = "",
           author: str = "",
           q: str = "",
@@ -240,15 +241,18 @@ def index(request: Request,
 
     Query params:
     - scope: "attention" (default), "mine", "review", "all"
+    - state: "open" (default), "closed", "merged", "all"
     - repo: "owner/name" — restrict to one repo
     - author: GitHub login — restrict to PRs authored by this user
     - q: case-insensitive substring match against ``pr.title``
     - sort: "updated_desc" (default), "updated_asc", "created_desc",
       "created_asc", "title"
 
-    v1.3.0: the "AI summary card" was replaced with manual
-    ``description`` / ``notes`` fields on each PR card. The dashboard
-    surfaces them as a preview row under the body.
+    v1.3.x: the ``state`` filter lets the user see closed / merged PRs
+    that the scheduler picked up. Default is ``open`` so the
+    "Attention / My PRs / Review-requested" tabs keep their
+    "what needs my attention" semantics — a closed PR is no longer
+    pending just because the local cache was stale.
     """
     settings = load_settings()
     db = engine_from_settings(settings)
@@ -269,9 +273,17 @@ def index(request: Request,
     # the union of `mine` and `review`. Resolve the two scopes, then
     # merge below.
     raw_scope = scope if scope in ("mine", "review", "all") else None
+    # State filter — default "open" so closed/merged PRs don't
+    # pollute the "what needs my attention" views. The user can
+    # switch via the ?state=closed or ?state=merged query param.
+    state_filter = state if state in ("open", "closed", "merged", "all") else "open"
     if scope == "attention":
-        mine_prs = list_prs_for_dashboard(db, login=login, scope_filter="mine")
-        review_prs = list_prs_for_dashboard(db, login=login, scope_filter="review")
+        mine_prs = list_prs_for_dashboard(
+            db, login=login, scope_filter="mine", state_filter=state_filter,
+        )
+        review_prs = list_prs_for_dashboard(
+            db, login=login, scope_filter="review", state_filter=state_filter,
+        )
         seen: set[int] = set()
         prs: list[PullRequest] = []
         for p in mine_prs + review_prs:
@@ -280,7 +292,9 @@ def index(request: Request,
             seen.add(p.id)
             prs.append(p)
     else:
-        prs = list_prs_for_dashboard(db, login=login, scope_filter=raw_scope)
+        prs = list_prs_for_dashboard(
+            db, login=login, scope_filter=raw_scope, state_filter=state_filter,
+        )
     # Dropdown sources are pulled BEFORE the row-level filters so the user
     # always sees every watched repo and every known User as a filter
     # option — not just the ones that survived the current scope+repo
@@ -378,7 +392,8 @@ def index(request: Request,
         {"nav": "home", "theme": _theme(request),
          "prs": prs, "badges_by_pr": badges_by_pr,
          "login": login, "counts": counts,
-         "scope": scope, "repo": repo, "author": author, "q": q, "sort": sort,
+         "scope": scope, "state": state_filter,
+         "repo": repo, "author": author, "q": q, "sort": sort,
          "all_repos": all_repos_rows,
          "all_authors": all_author_logins,
          **_user_context(db, login)})

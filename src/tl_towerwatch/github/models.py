@@ -38,6 +38,10 @@ class PullRequestData:
     deletions: int = 0
     changed_files: int = 0
     commits_count: int = 0
+    # ``merged_at`` distinguishes a "closed" PR (not merged) from a
+    # "merged" PR — GitHub's ``state`` field is just "closed" for
+    # both. None while the PR is still open.
+    merged_at: str | None = None
 
 @dataclass
 class ReviewData:
