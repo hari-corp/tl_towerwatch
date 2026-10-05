@@ -50,12 +50,29 @@ class ReviewData:
 
 @dataclass
 class CommentData:
+    """Inline review comment (diff-anchored). Distinct from IssueComment,
+    which lives on the conversation tab."""
+    github_id: int
     reviewer_login: str
     path: str | None
+    line: int | None
     body: str
     created_at: str
+    in_reply_to_id: int | None = None
     reviewer_avatar_url: str | None = None
     reviewer_display_name: str | None = None
+
+
+@dataclass
+class IssueCommentData:
+    """Top-level PR conversation comment."""
+    github_id: int
+    author_login: str
+    body: str
+    created_at: str
+    in_reply_to_id: int | None = None
+    author_avatar_url: str | None = None
+    author_display_name: str | None = None
 
 @dataclass
 class FileData:

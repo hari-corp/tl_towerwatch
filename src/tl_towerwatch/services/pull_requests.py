@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from tl_towerwatch.db.database import Database
 from tl_towerwatch.db.models import (
+    IssueComment,
     PullRequest,
     Repo,
     Review,
@@ -89,6 +90,7 @@ def _replace_reviews_and_comments(
 ) -> None:
     s.query(Review).filter(Review.pr_id == pr_id).delete()
     s.query(ReviewComment).filter(ReviewComment.pr_id == pr_id).delete()
+    s.query(IssueComment).filter(IssueComment.pr_id == pr_id).delete()
     for r in gh.list_reviews(owner, name, number):
         _upsert_user(
             s,
@@ -114,11 +116,31 @@ def _replace_reviews_and_comments(
         )
         s.add(
             ReviewComment(
+                github_id=c.github_id,
                 pr_id=pr_id,
                 reviewer_login=c.reviewer_login,
                 path=c.path,
+                line=c.line,
                 body=c.body,
                 created_at=c.created_at,
+                in_reply_to_id=c.in_reply_to_id,
+            )
+        )
+    for c in gh.list_issue_comments(owner, name, number):
+        _upsert_user(
+            s,
+            c.author_login,
+            avatar_url=c.author_avatar_url,
+            display_name=c.author_display_name,
+        )
+        s.add(
+            IssueComment(
+                github_id=c.github_id,
+                pr_id=pr_id,
+                author_login=c.author_login,
+                body=c.body,
+                created_at=c.created_at,
+                in_reply_to_id=c.in_reply_to_id,
             )
         )
 
@@ -165,6 +187,49 @@ def sync_one_pr(
         row = _upsert_pr(s, repo.id, pr)
         _replace_reviews_and_comments(s, row.id, gh, repo.owner, repo.name, number)
         return row
+
+
+def post_issue_comment_reply(
+    db: Database, gh: GitHubClient, repo: Repo, number: int, body: str,
+    in_reply_to_github_id: int | None = None,
+) -> dict:
+    """Post a reply to the PR's issue conversation and persist it locally.
+
+    Posts to GitHub first so a network failure bubbles up cleanly, then
+    refreshes the PR's comment cache so the new comment shows up in the
+    UI. When ``in_reply_to_github_id`` is supplied, the local row is
+    threaded under the parent so the timeline renders as a nested reply.
+    """
+    posted = gh.post_issue_comment(repo.owner, repo.name, number, body)
+    # Refresh so the new comment lands in the local cache.
+    sync_one_pr(db, gh, repo, number)
+    # If the user posted a threaded reply, patch the local row so the
+    # UI threads it without waiting for the next refresh to round-trip.
+    if in_reply_to_github_id and posted.get("id"):
+        with db.session() as s:
+            row = s.execute(
+                select(IssueComment).where(
+                    IssueComment.github_id == int(posted["id"])
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                row.in_reply_to_id = in_reply_to_github_id
+    return posted
+
+
+def post_review_comment_reply(
+    db: Database, gh: GitHubClient, repo: Repo, number: int,
+    parent_github_id: int, body: str,
+) -> dict:
+    """Post a threaded reply to an inline review comment and refresh."""
+    posted = gh.post_review_comment_reply(
+        repo.owner, repo.name, number, parent_github_id, body
+    )
+    sync_one_pr(db, gh, repo, number)
+    # The inline-comments endpoint already sets in_reply_to_id on the
+    # server-side response — the refresh re-pulls it. No local patch
+    # needed here.
+    return posted
 
 
 def save_manual_description(

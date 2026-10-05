@@ -1472,3 +1472,264 @@ def test_pr_detail_renders_prompt_viewer(tmp_path, monkeypatch, respx_mock):
         # Run-review widget is gone (no agent select, no /run-review form).
         assert "/run-review" not in body
         assert "Agente runner" not in body
+
+
+# ---------------------------------------------------------------------------
+# v1.3.x — PR conversation (issue comments) + review comments with
+# replies, rendered in GitHub-style timeline; both kinds of reply round-trip
+# to the user's account on GitHub.
+# ---------------------------------------------------------------------------
+
+
+def test_pr_detail_renders_conversation_and_review_comments(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: the PR detail page renders both the issue conversation
+    timeline and the inline review-comments thread. Top-level comments
+    appear with their bodies, replies nest under their parent linked
+    by GitHub's ``in_reply_to_id``.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import (
+        IssueComment, PullRequest, Repo, ReviewComment, User,
+    )
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice", avatar_url="https://x/alice.png",
+                   display_name="Alice Q."))
+        s.add(User(login="bob", avatar_url="https://x/bob.png",
+                   display_name="Bob D."))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        pr = PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        )
+        s.add(pr)
+        s.flush()
+        # Issue conversation: top-level + threaded reply.
+        s.add(IssueComment(
+            github_id=100, pr_id=pr.id, author_login="alice",
+            body="Question?", created_at="2026-01-01T01:00:00Z",
+        ))
+        s.add(IssueComment(
+            github_id=101, pr_id=pr.id, author_login="bob",
+            body="Answer.", created_at="2026-01-01T02:00:00Z",
+            in_reply_to_id=100,
+        ))
+        # Inline review comments: top-level on path + reply.
+        s.add(ReviewComment(
+            github_id=200, pr_id=pr.id, reviewer_login="bob",
+            path="a.py", line=3, body="missing null check",
+            created_at="2026-01-01T03:00:00Z",
+        ))
+        s.add(ReviewComment(
+            github_id=201, pr_id=pr.id, reviewer_login="alice",
+            path=None, line=None, body="good catch, fixing",
+            created_at="2026-01-01T04:00:00Z",
+            in_reply_to_id=200,
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/pr/acme/alpha/1")
+        assert r.status_code == 200
+        body = r.text
+        # Conversation card present + both comments rendered.
+        assert "data-testid=\"conversation-card\"" in body
+        assert "Question?" in body
+        assert "Answer." in body
+        # Issue-comment testids for both top-level and the reply.
+        assert "data-testid=\"issue-comment-100\"" in body
+        assert "data-testid=\"issue-comment-101\"" in body
+        # Inline review comments section.
+        assert "data-testid=\"review-comments-card\"" in body
+        assert "missing null check" in body
+        assert "good catch, fixing" in body
+        assert "data-testid=\"review-comment-200\"" in body
+        assert "data-testid=\"review-comment-201\"" in body
+        # The inline-comment path/line is rendered with the line number.
+        assert "data-testid=\"review-comment-path\"" in body
+        assert "a.py:3" in body
+        # Reply forms for both kinds of comment.
+        assert "/reply-issue" in body
+        assert "/reply-review-comment" in body
+        # A new-issue-comment form is at the bottom of the conversation.
+        assert "data-testid=\"new-issue-comment-form\"" in body
+
+
+def test_pr_reply_issue_route_posts_to_github_and_redirects(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: POST /pr/.../reply-issue posts a comment via GitHub's
+    POST /repos/{owner}/{name}/issues/{n}/comments, refreshes the
+    local cache, and bounces back to /pr/.../{n}?ok=reply.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    # Stub the GitHub endpoints the route touches: validate_token calls
+    # GET /user (already mocked), then the reply route POSTs to
+    # /issues/1/comments. We also mock the refresh that follows so the
+    # route's sync_one_pr() doesn't fail.
+    respx_mock.post("https://api.github.com/repos/acme/alpha/issues/1/comments").mock(
+        return_value=Response(201, json={"id": 999, "body": "thanks!"}))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1").mock(
+        return_value=Response(200, json={
+            "number": 1, "title": "feat", "body": "b",
+            "user": {"login": "alice"}, "state": "open", "draft": False,
+            "head": {"sha": "abc"}, "base": {"ref": "main"},
+            "html_url": "https://x/1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "requested_reviewers": []}))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1/reviews").mock(
+        return_value=Response(200, json=[]))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1/comments").mock(
+        return_value=Response(200, json=[]))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/issues/1/comments").mock(
+        return_value=Response(200, json=[
+            {"id": 999, "user": {"login": "alice"},
+             "body": "thanks!",
+             "created_at": "2026-01-01T05:00:00Z"}]))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/reply-issue",
+                   data={"body": "thanks!", "in_reply_to": ""},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert "ok=reply" in r.headers["location"]
+
+
+def test_pr_reply_review_comment_route_posts_to_github(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: POST /pr/.../reply-review-comment POSTs a threaded reply
+    via /pulls/{n}/comments/{id}/replies and refreshes."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    respx_mock.post("https://api.github.com/repos/acme/alpha/pulls/1/comments/200/replies").mock(
+        return_value=Response(201, json={"id": 300}))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1").mock(
+        return_value=Response(200, json={
+            "number": 1, "title": "feat", "body": "b",
+            "user": {"login": "alice"}, "state": "open", "draft": False,
+            "head": {"sha": "abc"}, "base": {"ref": "main"},
+            "html_url": "https://x/1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "requested_reviewers": []}))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1/reviews").mock(
+        return_value=Response(200, json=[]))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/pulls/1/comments").mock(
+        return_value=Response(200, json=[]))
+    respx_mock.get("https://api.github.com/repos/acme/alpha/issues/1/comments").mock(
+        return_value=Response(200, json=[]))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/reply-review-comment",
+                   data={"comment_github_id": "200", "body": "agreed"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert "ok=reply" in r.headers["location"]
+
+
+def test_pr_reply_empty_body_redirects_with_error(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: POST /pr/.../reply-issue with an empty body bounces
+    back with ?error=empty_reply — no GitHub call is made."""
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    from tl_towerwatch.config import load_settings
+    from tl_towerwatch.db.database import engine_from_settings
+    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.services.repos import add_repo
+    settings = load_settings(tmp_path)
+    db = engine_from_settings(settings)
+    db.create_all()
+    with db.session() as s:
+        s.add(User(login="alice"))
+    repo = add_repo(db, "acme", "alpha")
+    with db.session() as s:
+        s.add(PullRequest(
+            repo_id=repo.id, number=1, title="feat", body="b",
+            author_login="alice", state="open", draft=0,
+            head_sha="abc", base_ref="main", html_url="https://x/1",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            cached_at="2026-01-01T00:00:00Z",
+        ))
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "alice"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post("/pr/acme/alpha/1/reply-issue",
+                   data={"body": "   ", "in_reply_to": ""},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert "error=empty_reply" in r.headers["location"]

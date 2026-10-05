@@ -135,8 +135,206 @@
       <div style="font-size:13px;color:#c9d1d9;line-height:1.6;margin-top:8px;white-space:pre-wrap;">{{ pr.body or '(sin descripción)' }}</div>
     </div>
 
-    {# Reviews de humanos #}
-    <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;">
+    {# Reply banners — short-lived confirmation after the user posts a
+       reply from this page. The query param drives both visual state
+       and any UX that depends on it (e.g. clearing the textarea). #}
+    {% if reply_ok %}
+    <div data-testid="reply-ok-banner"
+         style="background:rgba(63,185,80,0.15);border:1px solid var(--success);border-radius:6px;padding:10px 14px;margin-bottom:12px;color:var(--fg);font-size:13px;">
+      ✓ <strong>Reply posted.</strong> Refrescá el PR si no aparece arriba.
+    </div>
+    {% endif %}
+    {% if reply_error %}
+    <div data-testid="reply-error-banner"
+         style="background:rgba(248,81,73,0.15);border:1px solid var(--danger);border-radius:6px;padding:10px 14px;margin-bottom:12px;color:var(--fg);font-size:13px;">
+      ✗ <strong>Reply failed.</strong> {{ reply_error }}
+    </div>
+    {% endif %}
+
+    {# ------------------------------------------------------------
+       Conversación (issue comments) — GitHub-style timeline.
+       Top-level comments render in chronological order; replies
+       nest under their parent linked by in_reply_to_id.
+       ------------------------------------------------------------ #}
+    <div data-testid="conversation-card"
+         style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <strong style="color:var(--fg);font-size:13px;">💬 Conversación</strong>
+        <span style="color:var(--muted);font-size:11px;">{{ issue_comments_count }} comentario(s)</span>
+      </div>
+      {% if issue_threads %}
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          {% for node in issue_threads %}
+            {% set c = node.comment %}
+            <div data-testid="issue-comment-{{ c.github_id }}"
+                 style="display:flex;gap:10px;align-items:start;">
+              <div style="width:32px;height:32px;border-radius:50%;background:var(--code-bg);border:1px solid var(--border);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--fg);font-weight:600;">
+                {% if c.author_avatar_url %}
+                  <img src="{{ c.author_avatar_url }}" alt="{{ c.author_login }}" style="width:100%;height:100%;object-fit:cover;">
+                {% else %}
+                  {{ c.author_login[:2] | upper }}
+                {% endif %}
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:baseline;gap:6px;font-size:12px;color:var(--muted);">
+                  <strong style="color:var(--fg);font-size:13px;">{{ c.author_login }}</strong>
+                  {% if c.author_display_name %}
+                    <span style="color:var(--muted);font-size:11px;">{{ c.author_display_name }}</span>
+                  {% endif %}
+                  <span style="color:var(--muted);">· {{ c.created_at | hace }}</span>
+                </div>
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:10px 12px;margin-top:6px;font-size:13px;color:var(--fg);line-height:1.5;white-space:pre-wrap;word-break:break-word;">{{ c.body }}</div>
+
+                {# Inline reply form (collapsed by default) #}
+                <details style="margin-top:6px;">
+                  <summary style="cursor:pointer;font-size:11px;color:var(--accent);list-style:none;display:inline-block;">
+                    ↩ Responder
+                  </summary>
+                  <form method="post"
+                        action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/reply-issue"
+                        style="margin-top:6px;display:flex;flex-direction:column;gap:6px;">
+                    <input type="hidden" name="in_reply_to" value="{{ c.github_id }}">
+                    <textarea name="body" rows="2" required
+                              placeholder="Escribí tu respuesta…"
+                              style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:6px 10px;border-radius:4px;font-family:system-ui,sans-serif;font-size:12px;box-sizing:border-box;resize:vertical;"></textarea>
+                    <div style="display:flex;justify-content:flex-end;gap:6px;">
+                      <button type="submit"
+                              style="background:var(--accent);color:#fff;border:0;padding:4px 12px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">
+                        Publicar respuesta
+                      </button>
+                    </div>
+                  </form>
+                </details>
+
+                {# Replies — nested with a left border line #}
+                {% if node.replies %}
+                  <div style="margin-top:10px;margin-left:14px;padding-left:14px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:10px;">
+                    {% for reply in node.replies %}
+                      <div data-testid="issue-comment-{{ reply.github_id }}">
+                        <div style="display:flex;align-items:baseline;gap:6px;font-size:12px;color:var(--muted);">
+                          <strong style="color:var(--fg);font-size:12px;">{{ reply.author_login }}</strong>
+                          {% if reply.author_display_name %}
+                            <span style="color:var(--muted);font-size:11px;">{{ reply.author_display_name }}</span>
+                          {% endif %}
+                          <span style="color:var(--muted);">· {{ reply.created_at | hace }}</span>
+                        </div>
+                        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 10px;margin-top:4px;font-size:12px;color:var(--fg);line-height:1.5;white-space:pre-wrap;word-break:break-word;">{{ reply.body }}</div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p style="color:var(--muted);font-size:13px;margin:0;">Sin comentarios en la conversación todavía.</p>
+      {% endif %}
+
+      {# Top-level reply form — posts a new issue comment (no parent) #}
+      <form method="post"
+            action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/reply-issue"
+            data-testid="new-issue-comment-form"
+            style="margin-top:14px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--border);padding-top:12px;">
+        <textarea name="body" rows="2" required
+                  placeholder="Escribí un comentario…"
+                  style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:8px 10px;border-radius:4px;font-family:system-ui,sans-serif;font-size:13px;box-sizing:border-box;resize:vertical;"></textarea>
+        <div style="display:flex;justify-content:flex-end;gap:6px;">
+          <button type="submit"
+                  style="background:var(--success);color:#fff;border:0;padding:6px 14px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">
+            💬 Comentar
+          </button>
+        </div>
+      </form>
+    </div>
+
+    {# ------------------------------------------------------------
+       Inline review comments — anchored to a diff line. Threaded
+       with the same model as issue comments.
+       ------------------------------------------------------------ #}
+    <div data-testid="review-comments-card"
+         style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <strong style="color:var(--fg);font-size:13px;">📝 Review comments</strong>
+        <span style="color:var(--muted);font-size:11px;">{{ human_comments_count }} comentario(s) en el diff</span>
+      </div>
+      {% if review_threads %}
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          {% for node in review_threads %}
+            {% set c = node.comment %}
+            <div data-testid="review-comment-{{ c.github_id }}"
+                 style="display:flex;gap:10px;align-items:start;">
+              <div style="width:32px;height:32px;border-radius:50%;background:var(--code-bg);border:1px solid var(--border);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--fg);font-weight:600;">
+                {% if c.reviewer_avatar_url %}
+                  <img src="{{ c.reviewer_avatar_url }}" alt="{{ c.reviewer_login }}" style="width:100%;height:100%;object-fit:cover;">
+                {% else %}
+                  {{ c.reviewer_login[:2] | upper }}
+                {% endif %}
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:baseline;gap:6px;font-size:12px;color:var(--muted);">
+                  <strong style="color:var(--fg);font-size:13px;">{{ c.reviewer_login }}</strong>
+                  {% if c.reviewer_display_name %}
+                    <span style="color:var(--muted);font-size:11px;">{{ c.reviewer_display_name }}</span>
+                  {% endif %}
+                  <span style="color:var(--muted);">· {{ c.created_at | hace }}</span>
+                </div>
+                {% if c.path %}
+                <code data-testid="review-comment-path"
+                      style="display:inline-block;margin-top:4px;background:var(--code-bg);color:var(--accent);font-size:11px;padding:1px 6px;border-radius:3px;">
+                  {{ c.path }}{% if c.line %}:{{ c.line }}{% endif %}
+                </code>
+                {% endif %}
+                <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:10px 12px;margin-top:6px;font-size:13px;color:var(--fg);line-height:1.5;white-space:pre-wrap;word-break:break-word;">{{ c.body }}</div>
+
+                <details style="margin-top:6px;">
+                  <summary style="cursor:pointer;font-size:11px;color:var(--accent);list-style:none;display:inline-block;">
+                    ↩ Responder en el diff
+                  </summary>
+                  <form method="post"
+                        action="/pr/{{ owner }}/{{ name }}/{{ pr.number }}/reply-review-comment"
+                        style="margin-top:6px;display:flex;flex-direction:column;gap:6px;">
+                    <input type="hidden" name="comment_github_id" value="{{ c.github_id }}">
+                    <textarea name="body" rows="2" required
+                              placeholder="Reply en este thread del diff…"
+                              style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);padding:6px 10px;border-radius:4px;font-family:system-ui,sans-serif;font-size:12px;box-sizing:border-box;resize:vertical;"></textarea>
+                    <div style="display:flex;justify-content:flex-end;gap:6px;">
+                      <button type="submit"
+                              style="background:var(--accent);color:#fff;border:0;padding:4px 12px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">
+                        Publicar respuesta
+                      </button>
+                    </div>
+                  </form>
+                </details>
+
+                {% if node.replies %}
+                  <div style="margin-top:10px;margin-left:14px;padding-left:14px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:10px;">
+                    {% for reply in node.replies %}
+                      <div data-testid="review-comment-{{ reply.github_id }}">
+                        <div style="display:flex;align-items:baseline;gap:6px;font-size:12px;color:var(--muted);">
+                          <strong style="color:var(--fg);font-size:12px;">{{ reply.reviewer_login }}</strong>
+                          {% if reply.reviewer_display_name %}
+                            <span style="color:var(--muted);font-size:11px;">{{ reply.reviewer_display_name }}</span>
+                          {% endif %}
+                          <span style="color:var(--muted);">· {{ reply.created_at | hace }}</span>
+                        </div>
+                        <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:5px;padding:8px 10px;margin-top:4px;font-size:12px;color:var(--fg);line-height:1.5;white-space:pre-wrap;word-break:break-word;">{{ reply.body }}</div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p style="color:var(--muted);font-size:13px;margin:0;">Sin review comments en el diff.</p>
+      {% endif %}
+    </div>
+
+    {# Reviews de humanos — top-level review state (APPROVE / REQUEST_CHANGES / COMMENT) #}
+    <div data-testid="reviews-card"
+         style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px 16px;">
       <strong style="color:#c9d1d9;font-size:13px;">Reviews de humanos</strong>
       {% if human_reviews %}
         <div style="margin-top:10px;font-size:13px;color:#c9d1d9;display:flex;flex-direction:column;gap:10px;">

@@ -15,6 +15,7 @@ from tl_towerwatch.config import Settings, load_settings
 from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
 from tl_towerwatch.db.database import engine_from_settings
 from tl_towerwatch.db.models import (
+    IssueComment,
     PullRequest,
     Repo,
     Review,
@@ -25,6 +26,8 @@ from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
 from tl_towerwatch.services.pull_requests import (
     list_prs_for_dashboard,
+    post_issue_comment_reply,
+    post_review_comment_reply,
     save_manual_description,
     save_manual_notes,
     sync_one_pr,
@@ -636,12 +639,17 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
     pr = None
     human_reviews: list[Review] = []
     human_comments: list[ReviewComment] = []
+    issue_comments: list[IssueComment] = []
+    # User rows keyed by login so the template can render avatars and
+    # display names without hitting the DB per row.
+    user_by_login: dict[str, User] = {}
     resolved_count = 0
     pending_count = 0
     new_count = 0
     commits_count = 0
     human_reviews_count = 0
     human_comments_count = 0
+    issue_comments_count = 0
     with db.session() as s:
         repo = s.execute(select(Repo).where(
             Repo.owner == owner, Repo.name == name
@@ -659,13 +667,55 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
                     select(ReviewComment).where(ReviewComment.pr_id == pr.id)
                     .order_by(ReviewComment.created_at.asc())
                 ).scalars())
+                issue_comments = list(s.execute(
+                    select(IssueComment).where(IssueComment.pr_id == pr.id)
+                    .order_by(IssueComment.created_at.asc())
+                ).scalars())
+                # Pull every user we may need to render avatars in one shot.
+                logins = {r.reviewer_login for r in human_reviews} \
+                    | {c.reviewer_login for c in human_comments} \
+                    | {c.author_login for c in issue_comments}
+                if logins:
+                    user_by_login = {
+                        u.login: u for u in s.execute(
+                            select(User).where(User.login.in_(logins))
+                        ).scalars()
+                    }
                 human_reviews_count = len(human_reviews)
                 human_comments_count = len(human_comments)
+                issue_comments_count = len(issue_comments)
                 commits_count = getattr(pr, "commits_count", 0) or 0
+    # Thread the comments: build per-issue-comment reply trees so the
+    # template can render GitHub-style nested conversation. Replies
+    # render under their parent (linked by GitHub's ``in_reply_to_id``).
+    # Top-level comments stay in chronological order.
+    issue_threads = _thread_issue_comments(issue_comments)
+    review_threads = _thread_review_comments(human_comments)
+    # Attach avatar / display name to each comment row so the
+    # template doesn't need a separate User lookup per row.
+    for c in issue_comments:
+        u = user_by_login.get(c.author_login)
+        c.author_avatar_url = getattr(u, "avatar_url", None)
+        c.author_display_name = getattr(u, "display_name", None)
+    for c in human_comments:
+        u = user_by_login.get(c.reviewer_login)
+        c.reviewer_avatar_url = getattr(u, "avatar_url", None)
+        c.reviewer_display_name = getattr(u, "display_name", None)
+    for r in human_reviews:
+        u = user_by_login.get(r.reviewer_login)
+        r.reviewer_avatar_url = getattr(u, "avatar_url", None)
+        r.reviewer_display_name = getattr(u, "display_name", None)
+    reply_ok = request.query_params.get("ok") == "reply"
+    error_param = request.query_params.get("error", "")
     return templates.TemplateResponse(request, "pr_detail.html",
         {"nav": "home", "theme": _theme(request),
          "pr": pr,
-         "human_reviews": human_reviews, "human_comments": human_comments,
+         "human_reviews": human_reviews,
+         "human_comments": human_comments,
+         "issue_comments": issue_comments,
+         "issue_threads": issue_threads,
+         "review_threads": review_threads,
+         "issue_comments_count": issue_comments_count,
          "resolved_count": resolved_count,
          "pending_count": pending_count,
          "new_count": new_count,
@@ -674,7 +724,48 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
          "human_comments_count": human_comments_count,
          "prompt_slots": PROMPT_SLOTS,
          "owner": owner, "name": name,
+         "reply_ok": reply_ok,
+         "reply_error": error_param,
          **_user_context(db, "dimh")})
+
+
+def _thread_issue_comments(comments: list[IssueComment]) -> list[dict]:
+    """Group replies under their parent comment for GitHub-style
+    rendering. Top-level comments stay in the order they were created
+    (so a sync doesn't reshuffle mid-thread). Replies are sorted by
+    ``created_at`` ascending inside each thread.
+    """
+    by_id: dict[int, IssueComment] = {c.github_id: c for c in comments if c.github_id}
+    top: list[dict] = []
+    replies: dict[int, list[IssueComment]] = {}
+    for c in comments:
+        parent = c.in_reply_to_id if c.in_reply_to_id and c.in_reply_to_id in by_id else None
+        if parent is None:
+            top.append({"comment": c, "replies": []})
+        else:
+            replies.setdefault(parent, []).append(c)
+    for node in top:
+        node["replies"] = sorted(replies.get(node["comment"].github_id, []),
+                                 key=lambda c: c.created_at)
+    return top
+
+
+def _thread_review_comments(comments: list[ReviewComment]) -> list[dict]:
+    """Same threading model as issue comments but for inline review
+    comments (anchored to a diff line)."""
+    by_id: dict[int, ReviewComment] = {c.github_id: c for c in comments if c.github_id}
+    top: list[dict] = []
+    replies: dict[int, list[ReviewComment]] = {}
+    for c in comments:
+        parent = c.in_reply_to_id if c.in_reply_to_id and c.in_reply_to_id in by_id else None
+        if parent is None:
+            top.append({"comment": c, "replies": []})
+        else:
+            replies.setdefault(parent, []).append(c)
+    for node in top:
+        node["replies"] = sorted(replies.get(node["comment"].github_id, []),
+                                 key=lambda c: c.created_at)
+    return top
 
 
 @router.post("/pr/{owner}/{name}/{number}/refresh")
@@ -723,6 +814,100 @@ def pr_save_manual_notes(owner: str, name: str, number: int,
     save_manual_notes(db, repo, number, notes)
     return RedirectResponse(f"/pr/{owner}/{name}/{number}?ok=notes",
                             status_code=303)
+
+
+@router.post("/pr/{owner}/{name}/{number}/reply-issue")
+def pr_reply_issue_comment(owner: str, name: str, number: int,
+                           body: str = Form(...),
+                           in_reply_to: str = Form("")):
+    """Reply to a top-level (or threaded) issue conversation comment.
+
+    Both the new comment and the parent's threading link are persisted
+    locally so the GitHub-style timeline renders correctly. Posting to
+    GitHub first means a network failure surfaces a friendly redirect
+    instead of a half-saved reply.
+    """
+    body_text = (body or "").strip()
+    if not body_text:
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=empty_reply",
+            status_code=303,
+        )
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
+    in_reply_to_id = None
+    if in_reply_to:
+        try:
+            in_reply_to_id = int(in_reply_to)
+        except ValueError:
+            in_reply_to_id = None
+    with db.session() as s:
+        repo = s.execute(select(Repo).where(
+            Repo.owner == owner, Repo.name == name
+        )).scalar_one()
+    try:
+        with GitHubClient(token=token) as gh:
+            post_issue_comment_reply(
+                db, gh, repo, number, body_text,
+                in_reply_to_github_id=in_reply_to_id,
+            )
+    except Exception as e:
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=reply_failed&reason="
+            f"{type(e).__name__}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/pr/{owner}/{name}/{number}?ok=reply",
+        status_code=303,
+    )
+
+
+@router.post("/pr/{owner}/{name}/{number}/reply-review-comment")
+def pr_reply_review_comment(owner: str, name: str, number: int,
+                            comment_github_id: str = Form(...),
+                            body: str = Form(...)):
+    """Reply to an inline review comment anchored to a diff line."""
+    body_text = (body or "").strip()
+    if not body_text:
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=empty_reply",
+            status_code=303,
+        )
+    try:
+        parent_id = int(comment_github_id)
+    except ValueError:
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=reply_failed",
+            status_code=303,
+        )
+    settings = load_settings()
+    db = engine_from_settings(settings)
+    token = _safe_resolve_token(settings)
+    if isinstance(token, RedirectResponse):
+        return token
+    with db.session() as s:
+        repo = s.execute(select(Repo).where(
+            Repo.owner == owner, Repo.name == name
+        )).scalar_one()
+    try:
+        with GitHubClient(token=token) as gh:
+            post_review_comment_reply(
+                db, gh, repo, number, parent_id, body_text,
+            )
+    except Exception as e:
+        return RedirectResponse(
+            f"/pr/{owner}/{name}/{number}?error=reply_failed&reason="
+            f"{type(e).__name__}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/pr/{owner}/{name}/{number}?ok=reply",
+        status_code=303,
+    )
 
 
 @router.post("/pr/{owner}/{name}/{number}/show-review-prompt")

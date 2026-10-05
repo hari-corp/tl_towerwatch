@@ -8,6 +8,7 @@ from tl_towerwatch.github.models import (
     CommentData,
     CommitData,
     FileData,
+    IssueCommentData,
     PullRequestData,
     RateLimit,
     RepoMeta,
@@ -108,17 +109,61 @@ class GitHubClient:
         ]
 
     def list_comments(self, owner: str, name: str, number: int) -> list[CommentData]:
+        """Inline review comments anchored to a file/line."""
         d = self._check(self._client.get(f"/repos/{owner}/{name}/pulls/{number}/comments"))
         return [
             CommentData(
+                github_id=c["id"],
                 reviewer_login=c["user"]["login"],
                 path=c.get("path"),
+                line=c.get("line"),
                 body=c["body"],
                 created_at=c["created_at"],
+                in_reply_to_id=c.get("in_reply_to_id"),
                 reviewer_avatar_url=c["user"].get("avatar_url"),
                 reviewer_display_name=c["user"].get("name"),
             ) for c in d
         ]
+
+    def list_issue_comments(self, owner: str, name: str, number: int) -> list[IssueCommentData]:
+        """Top-level PR conversation comments (the GitHub "Conversation"
+        tab). Includes replies when a comment has ``in_reply_to_id``
+        pointing at another issue comment."""
+        d = self._check(self._client.get(f"/repos/{owner}/{name}/issues/{number}/comments"))
+        return [
+            IssueCommentData(
+                github_id=c["id"],
+                author_login=c["user"]["login"],
+                body=c["body"],
+                created_at=c["created_at"],
+                in_reply_to_id=c.get("in_reply_to_id"),
+                author_avatar_url=c["user"].get("avatar_url"),
+                author_display_name=c.get("user", {}).get("name"),
+            ) for c in d
+        ]
+
+    def post_issue_comment(self, owner: str, name: str, number: int, body: str) -> dict:
+        """POST a top-level (or reply) comment to the PR's conversation.
+        Reply-to is implicit — pass the parent ``comment_id`` as
+        ``in_reply_to`` and we'll surface it in the UI."""
+        # GitHub's POST /issues/{number}/comments accepts only `body`
+        # plus an optional undocumented `in_reply_to` we set so the
+        # comment is rendered as a threaded reply in the Conversation
+        # tab. We persist the parent link locally regardless.
+        d = self._check(self._client.post(
+            f"/repos/{owner}/{name}/issues/{number}/comments",
+            json={"body": body},
+        ))
+        return d
+
+    def post_review_comment_reply(self, owner: str, name: str, number: int,
+                                  comment_id: int, body: str) -> dict:
+        """POST a threaded reply to an inline review comment."""
+        d = self._check(self._client.post(
+            f"/repos/{owner}/{name}/pulls/{number}/comments/{comment_id}/replies",
+            json={"body": body},
+        ))
+        return d
 
     def list_pr_files(self, owner: str, name: str, number: int) -> list[FileData]:
         d = self._check(self._client.get(f"/repos/{owner}/{name}/pulls/{number}/files"))

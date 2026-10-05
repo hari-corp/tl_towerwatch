@@ -84,8 +84,10 @@ def test_sync_repo_applies_allowed_authors(tmp_path: Path):
     )
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/2/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/2/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/2/comments").mock(return_value=Response(200, json=[]))
     with GitHubClient(token="x") as gh:
         n = sync_repo(db, gh, list_repos(db)[0])
     assert n == 2  # both fetched
@@ -115,6 +117,7 @@ def test_sync_repo_populates_user_avatar_and_display_name(tmp_path: Path):
     )
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
     repo_row = list_repos(db)[0]
     with GitHubClient(token="x") as gh:
         sync_repo(db, gh, repo_row)
@@ -146,6 +149,7 @@ def test_sync_repo_persists_last_fetch_metadata(tmp_path: Path):
     )
     respx.get("https://api.github.com/repos/o/n/pulls/1/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
     repo_row = list_repos(db)[0]
     with GitHubClient(token="x") as gh:
         n = sync_repo(db, gh, repo_row)
@@ -177,10 +181,11 @@ def test_sync_one_pr_upserts_and_refreshes(tmp_path: Path):
     )
     respx.get("https://api.github.com/repos/o/n/pulls/7/comments").mock(
         return_value=Response(200, json=[
-            {"user": {"login": "luis.f"}, "path": "x.py", "body": "nit",
+            {"id": 10, "user": {"login": "luis.f"}, "path": "x.py", "body": "nit",
              "created_at": "2026-02-02T00:00:00Z"}
         ])
     )
+    respx.get("https://api.github.com/repos/o/n/issues/7/comments").mock(return_value=Response(200, json=[]))
     repo_row = list_repos(db)[0]
     with GitHubClient(token="x") as gh:
         pr = sync_one_pr(db, gh, repo_row, 7)
@@ -197,6 +202,7 @@ def test_sync_one_pr_upserts_and_refreshes(tmp_path: Path):
     )
     respx.get("https://api.github.com/repos/o/n/pulls/7/reviews").mock(return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/7/comments").mock(return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/7/comments").mock(return_value=Response(200, json=[]))
     with GitHubClient(token="x") as gh:
         pr2 = sync_one_pr(db, gh, repo_row, 7)
     assert pr2.id == pr.id
@@ -418,6 +424,7 @@ def test_save_manual_description_persists(tmp_path):
         return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
         return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
     with GitHubClient(token="x") as gh:
         sync_one_pr(db, gh, repo, 1)
     save_manual_description(db, repo, 1, "TL;DR for reviewers")
@@ -453,6 +460,7 @@ def test_save_manual_notes_persists(tmp_path):
         return_value=Response(200, json=[]))
     respx.get("https://api.github.com/repos/o/n/pulls/1/comments").mock(
         return_value=Response(200, json=[]))
+    respx.get("https://api.github.com/repos/o/n/issues/1/comments").mock(return_value=Response(200, json=[]))
     with GitHubClient(token="x") as gh:
         sync_one_pr(db, gh, repo, 1)
     save_manual_notes(db, repo, 1, "release notes")

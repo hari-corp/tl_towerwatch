@@ -84,12 +84,34 @@ class Review(Base):
 class ReviewComment(Base):
     __tablename__ = "review_comments"
     id = Column(Integer, primary_key=True)
+    # GitHub's comment id; needed to POST a reply. Distinct from the
+    # local primary key so multiple syncs don't collide.
+    github_id = Column(Integer, unique=True)
     pr_id = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
     reviewer_login = Column(String, ForeignKey("users.login"), nullable=False)
     path = Column(String)
+    line = Column(Integer)
     body = Column(Text, nullable=False)
     created_at = Column(String, nullable=False)
+    # Threading: replies have `in_reply_to_id` pointing to the parent
+    # comment's GitHub id. Top-level review comments have NULL.
+    in_reply_to_id = Column(Integer)
     __table_args__ = (Index("idx_comments_pr", "pr_id"),)
+
+
+class IssueComment(Base):
+    """Top-level PR conversation comments (the GitHub "Conversation"
+    tab). Distinct from ReviewComment because they live on the issue
+    thread, not on the diff."""
+    __tablename__ = "issue_comments"
+    id = Column(Integer, primary_key=True)
+    github_id = Column(Integer, unique=True)
+    pr_id = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    author_login = Column(String, ForeignKey("users.login"), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(String, nullable=False)
+    in_reply_to_id = Column(Integer)
+    __table_args__ = (Index("idx_issue_comments_pr", "pr_id"),)
 
 
 class PRSummary(Base):
