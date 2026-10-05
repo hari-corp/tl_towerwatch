@@ -214,15 +214,17 @@
 
       {# ----------------------------------------------------------------
          Active-mode credentials editor.
-         PAT mode shows the token chip + replace flow.
-         OAuth mode shows client_id + client_secret + a "complete OAuth
-         flow" hint.
+         v1.3.x: BOTH blocks render so the client can toggle visibility
+         when the user picks a different radio. We mark the inactive
+         one with ``data-active="false"`` and CSS ``display:none``; a
+         small inline script below swaps the active block on radio
+         change so the user doesn't have to save + reload.
          ---------------------------------------------------------------- #}
-      {% if auth_mode == 'pat' %}
       <div data-testid="pat-config"
-           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;">
+           data-active="{{ 'true' if auth_mode == 'pat' else 'false' }}"
+           style="{% if auth_mode != 'pat' %}display:none;{% endif %}background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <strong style="color:var(--fg);font-size:13px;">🔑 Token activo</strong>
+          <strong style="color:var(--fg);font-size:13px;">🔑 Token activo (PAT)</strong>
           <span style="color:var(--success);font-size:11px;">
             {% if settings.github_token %}✓ configurado{% else %}✗ no configurado{% endif %}
           </span>
@@ -244,21 +246,18 @@
             <code>TOWERWATCH_GITHUB_TOKEN</code>.
           </div>
         </div>
-        <div style="display:flex;gap:6px;">
-          <form method="post" action="/settings/auth/test" style="margin:0">
-            <button type="submit"
-                    style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
-              🔄 Probar conexión
-            </button>
-          </form>
-        </div>
+        <form method="post" action="/settings/auth/test" style="margin:0">
+          <button type="submit"
+                  style="background:var(--card);color:var(--accent);border:1px solid var(--border);padding:5px 10px;border-radius:4px;font-size:11px;cursor:pointer;">
+            🔄 Probar conexión
+          </button>
+        </form>
       </div>
-      {% endif %}
 
-      {% if auth_mode == 'oauth' %}
       <div data-testid="oauth-config"
-           style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px;">
-        <strong style="color:var(--fg);font-size:13px;">🔑 Credenciales OAuth</strong>
+           data-active="{{ 'true' if auth_mode == 'oauth' else 'false' }}"
+           style="{% if auth_mode != 'oauth' %}display:none;{% endif %}background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px;">
+        <strong style="color:var(--fg);font-size:13px;">🔑 Credenciales OAuth (GitHub App)</strong>
         <div>
           <label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px;">OAuth client_id</label>
           <input name="github_oauth_client_id_edit"
@@ -286,7 +285,35 @@
           </button>
         </form>
       </div>
-      {% endif %}
+
+      {# Inline toggle script — runs on every render so switching modes
+         is instant. The radios already update the form value; this
+         just keeps the visible credentials editor in sync. #}
+      <script>
+        (function () {
+          var radios = document.querySelectorAll(
+            'input[name="auth_mode"]'
+          );
+          var patBlock = document.querySelector('[data-testid="pat-config"]');
+          var oauthBlock = document.querySelector('[data-testid="oauth-config"]');
+          if (!radios.length || !patBlock || !oauthBlock) return;
+          function applyMode() {
+            var selected = document.querySelector(
+              'input[name="auth_mode"]:checked'
+            );
+            if (!selected) return;
+            var mode = selected.value;
+            patBlock.style.display = (mode === 'pat') ? 'block' : 'none';
+            oauthBlock.style.display = (mode === 'oauth') ? 'flex' : 'none';
+            patBlock.setAttribute('data-active', mode === 'pat' ? 'true' : 'false');
+            oauthBlock.setAttribute('data-active', mode === 'oauth' ? 'true' : 'false');
+          }
+          radios.forEach(function (r) {
+            r.addEventListener('change', applyMode);
+          });
+          applyMode();
+        })();
+      </script>
 
       <div style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
         <button type="submit" data-testid="save-auth-btn"

@@ -1827,3 +1827,45 @@ def test_pr_reply_issue_route_handles_network_error(
         assert r.status_code == 303
         assert "error=github_unreachable" in r.headers["location"]
         assert "ConnectError" in r.headers["location"]
+
+
+def test_settings_renders_both_auth_blocks_with_toggle_script(
+    tmp_path, monkeypatch, respx_mock,
+):
+    """v1.3.x: /settings renders BOTH the PAT and OAuth credentials
+    editors plus the inline toggle script so the user can switch
+    modes client-side without a page reload.
+
+    In PAT mode (default), the PAT block is active and OAuth is
+    hidden via ``display:none``. After switching to OAuth in the
+    browser the script flips ``data-active`` and toggles
+    ``style.display``.
+    """
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
+    respx_mock.get("https://api.github.com/user").mock(
+        return_value=Response(200, json={"login": "dimh"},
+                              headers={"X-OAuth-Scopes": "repo, read:user"}))
+    from tl_towerwatch.web import create_app
+    from fastapi.testclient import TestClient
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.get("/settings")
+        assert r.status_code == 200
+        body = r.text
+        # Both blocks present in the DOM.
+        assert "data-testid=\"pat-config\"" in body
+        assert "data-testid=\"oauth-config\"" in body
+        # PAT block has data-active="true" by default; OAuth is false.
+        import re
+        pat = re.search(r'data-testid="pat-config"[^>]*data-active="(\w+)"', body)
+        oauth = re.search(r'data-testid="oauth-config"[^>]*data-active="(\w+)"', body)
+        assert pat and pat.group(1) == "true"
+        assert oauth and oauth.group(1) == "false"
+        # The OAuth block carries display:none so it's hidden on first render.
+        assert re.search(
+            r'data-testid="oauth-config"[^>]*style="display:none', body
+        ) is not None
+        # Inline JS swap script is in the page.
+        assert "patBlock.style.display" in body
+        assert "addEventListener('change'" in body
