@@ -56,4 +56,6 @@ Any behaviour change needs a test in `tests/`.
 
 - `docs/architecture.md` — module map, data flow, persistence, testing.
 - `docs/adr/0001-no-in-app-llm.md` — why v1.3.0 removed the LLM stack.
+- `docs/ai-onboarding-prompt.md` — reusable prompt to replicate this setup
+  in another repository.
 - `docs/superpowers/` is **historical** and does not describe current behaviour.

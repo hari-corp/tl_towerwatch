@@ -67,7 +67,8 @@ make run       # same as: uv run tl_towerwatch serve
 
 Agent instructions live in `AGENTS.md` (Claude Code reads it through the
 `CLAUDE.md` shim). Architecture and decisions are documented in
-`docs/architecture.md` and `docs/adr/`.
+`docs/architecture.md` and `docs/adr/`. To bootstrap the same setup in
+another repository, reuse [`docs/ai-onboarding-prompt.md`](docs/ai-onboarding-prompt.md).
 
 ## Configuration
 
