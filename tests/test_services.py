@@ -1,14 +1,11 @@
 import json
-import os
 from pathlib import Path
 
-import pytest
 import respx
 from httpx import Response
 
 from tl_towerwatch.config import load_settings
 from tl_towerwatch.db.database import engine_from_settings
-from tl_towerwatch.db.models import ReviewFinding, ReviewRun
 from tl_towerwatch.github.client import GitHubClient
 from tl_towerwatch.services.pull_requests import (
     get_pr_with_details,
@@ -232,7 +229,9 @@ def test_list_prs_for_dashboard_scopes(tmp_path: Path):
     r = add_repo(db, "o", "n")
     # Create two PRs directly
     from tl_towerwatch.db.models import PullRequest, Review, User
-    iso = lambda s: s
+
+    def iso(s):
+        return s
     with db.session() as s:
         for login in ("dimh", "alice"):
             if s.get(User, login) is None:
@@ -352,6 +351,51 @@ def test_assemble_review_prompt_truncates_huge_diff(tmp_path, monkeypatch):
     assert out.count("\n") < 2500
     assert "truncated" in out
     assert "big pr" in out
+
+
+@respx.mock
+def test_assemble_review_prompt_honours_custom_diff_caps(tmp_path, monkeypatch):
+    """The ``max_files`` / ``max_lines`` arguments (wired from
+    ``Settings.max_diff_files`` / ``max_diff_lines``) must cap both the
+    number of files and the total diff lines.
+    """
+    from tl_towerwatch.config_io import save_config_yaml
+    from tl_towerwatch.services.prompt_assembly import assemble_review_prompt
+    save_config_yaml(tmp_path / "config.yaml", {"prompts": {
+        "review": "{diff}",
+        "post_review": "{findings}",
+        "check_resolved": "{findings}",
+    }})
+    respx.get("https://api.github.com/repos/o/n/pulls/1").mock(return_value=Response(
+        200, json={"number": 1, "title": "caps", "body": "",
+                   "user": {"login": "a"}, "state": "open", "draft": False,
+                   "head": {"sha": "s1"}, "base": {"ref": "main"},
+                   "html_url": "u",
+                   "created_at": "2026-01-01T00:00:00Z",
+                   "updated_at": "2026-01-01T00:00:00Z",
+                   "requested_reviewers": []}))
+    files = [
+        {"filename": "f0.py", "additions": 1, "deletions": 0,
+         "status": "modified", "patch": "l1\nl2\nl3\nl4\n"},
+        {"filename": "f1.py", "additions": 1, "deletions": 0,
+         "status": "modified", "patch": "a\nb\n"},
+        {"filename": "f2.py", "additions": 1, "deletions": 0,
+         "status": "modified", "patch": "z\n"},
+    ]
+    respx.get("https://api.github.com/repos/o/n/pulls/1/files").mock(
+        return_value=Response(200, json=files))
+    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
+    with GitHubClient(token="x") as gh:
+        out = assemble_review_prompt(
+            gh, data_dir=tmp_path, owner="o", name="n", number=1,
+            slot="review", mode="fresh", max_files=2, max_lines=3,
+        )
+    assert "f0.py" in out
+    assert "l3" in out
+    assert "l4" not in out           # line cap hit mid-file
+    assert "f1.py" not in out        # no lines left for the second file
+    assert "f2.py" not in out        # file cap = 2
+    assert "truncated" in out
 
 
 @respx.mock
@@ -496,7 +540,7 @@ def test_sync_repo_picks_up_state_transitions(tmp_path):
     The old code only fetched ``state=open`` from GitHub, so closed
     PRs were never seen and the local row stayed "open" forever.
     """
-    from tl_towerwatch.db.models import PullRequest, Repo
+    from tl_towerwatch.db.models import PullRequest
     from tl_towerwatch.services.pull_requests import sync_repo
     from sqlalchemy import select as _select
     db = _setup(tmp_path)
@@ -606,7 +650,7 @@ def test_sync_repo_populates_changed_files_from_per_pr_fetch(tmp_path):
     detail page actually had file changes.
     """
     from sqlalchemy import select as _select
-    from tl_towerwatch.db.models import PullRequest, Repo
+    from tl_towerwatch.db.models import PullRequest
     from tl_towerwatch.services.pull_requests import sync_repo
     db = _setup(tmp_path)
     add_repo(db, "o", "n")

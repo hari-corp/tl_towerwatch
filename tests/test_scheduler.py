@@ -23,10 +23,6 @@ class _StubGH:
     """Stand-in for GitHubClient; never used because sync_repo is patched to raise."""
 
 
-class _StubLLM:
-    name = "stub"
-
-
 def test_scheduler_persists_last_fetch_error_on_sync_failure(env, tmp_path):
     """Regression: when ``sync_repo`` raises, the scheduler must persist
     ``last_fetch_status='error'`` and the exception message on the Repo row.

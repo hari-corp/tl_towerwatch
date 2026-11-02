@@ -17,7 +17,6 @@ def test_db_has_perf_indexes(tmp_path):
         ("pull_requests", ["idx_pr_repo"]),
         ("reviews", ["idx_reviews_pr"]),
         ("review_comments", ["idx_comments_pr"]),
-        ("review_findings", ["idx_findings_run", "idx_findings_key"]),
     ]:
         idx = [i["name"] for i in insp.get_indexes(tbl)]
         for e in expected:

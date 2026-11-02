@@ -34,6 +34,8 @@ def assemble_review_prompt(
     number: int,
     slot: str = "review",
     mode: str = "fresh",
+    max_files: int = 30,
+    max_lines: int = 2000,
 ) -> str:
     """Return the rendered prompt body for ``owner/name#number``.
 
@@ -58,7 +60,7 @@ def assemble_review_prompt(
         )
     pr = gh.get_pr(owner, name, number)
     files = gh.list_pr_files(owner, name, number)
-    diff_text = _summarize_diff(files, max_files=30, max_lines=2000)
+    diff_text = _summarize_diff(files, max_files=max_files, max_lines=max_lines)
     pr_metadata = {
         "title": pr.title,
         "body": pr.body or "",

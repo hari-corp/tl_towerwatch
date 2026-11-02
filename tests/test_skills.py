@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from tl_towerwatch.skills.registry import PROMPT_SLOTS, load_prompts, save_prompts
-from tl_towerwatch.skills.prompts import render_review_prompt
 
 
 def test_load_prompts_defaults_when_no_config(tmp_path: Path):
@@ -40,19 +39,3 @@ def test_save_prompts_preserves_other_blocks(tmp_path: Path):
     assert data["theme"] == "dark"
     assert data["auth"] == {"mode": "pat"}
     assert data["prompts"]["review"] == "r1"
-
-
-def test_render_review_prompt_substitutes_placeholders():
-    p = render_review_prompt(
-        pr_metadata={"title": "t", "body": "b", "author": "x", "number": 1,
-                     "repo": "o/n", "head_sha": "abc"},
-        diff="+ line\n- old\n",
-        mode="compare",
-        previous_findings=[{"finding_key":"a:1:foo","severity":"high",
-                            "file_path":"a.py","line":1,"description":"foo",
-                            "status":"pending"}],
-        template="Title: {title}\nMode: {mode_intro}\nDiff:\n{diff}\nPrev: {findings_list}",
-    )
-    assert "t" in p
-    assert "foo" in p
-    assert "compare" in p.lower() or "previous" in p.lower()

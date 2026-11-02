@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -7,30 +6,6 @@ from tl_towerwatch.cli import app
 
 runner = CliRunner()
 
-
-class _StubFile:
-    patch = "+ x\n"
-
-
-class _StubPR:
-    number = 1
-    title = "t"
-    body = "b"
-    author_login = "a"
-    head_sha = "s1"
-
-
-class _StubGH:
-    def __init__(self, *a, **kw) -> None:
-        pass
-    def __enter__(self):
-        return self
-    def __exit__(self, *exc):
-        return False
-    def get_pr(self, owner, name, number):
-        return _StubPR()
-    def list_pr_files(self, owner, name, number):
-        return [_StubFile()]
 
 def test_help_runs():
     result = runner.invoke(app, ["--help"])
@@ -104,9 +79,7 @@ def test_init_oauth_path_persists_oauth_fields(tmp_path: Path, monkeypatch):
     TOWERWATCH_GITHUB_OAUTH_* env-var names (matching v1.0 fix I5 rename).
     """
     monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    responses = iter(
-        ["oauth", "cid", "csec", "anthropic", "claude-3-5-sonnet-latest"]
-    )
+    responses = iter(["oauth", "cid", "csec"])
     monkeypatch.setattr("typer.prompt", lambda *a, **kw: next(responses))
     monkeypatch.setattr("typer.confirm", lambda *a, **kw: False)
     r = runner.invoke(app, ["init"], input="")

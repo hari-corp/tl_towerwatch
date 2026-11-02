@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,25 +40,13 @@ class Settings(BaseSettings):
     host_alias: str = "localhost"
     theme: Literal["dark", "light", "system"] = "dark"
     refresh_interval_seconds: int = 300
-    # v1.1 (Task 12): cap the diff handed to the LLM for PR summarisation so
-    # a single 5,000-file PR can't blow the model's context window. The old
-    # char-based `[:20000]` truncation could still send tens of thousands of
-    # lines when a single file was huge.
+    # Cap the diff included in the manually assembled review prompt so a
+    # single 5,000-file PR doesn't produce an unusable prompt for the
+    # external LLM.
     max_diff_lines: int = 2000
     max_diff_files: int = 30
 
     auth: AuthCfg = Field(default_factory=AuthCfg)
-
-    @model_validator(mode="after")
-    def _noop(self) -> Settings:
-        # Pre-v1.3.0 had a ``_mirror_llm_keys`` validator that copied flat
-        # API-key fields into a nested LLMCfg. With the LLM stack removed
-        # the validator isn't needed, but we keep a no-op stub so the
-        # ``Settings`` model has at least one ``@model_validator`` and the
-        # pydantic-settings machinery stays warm. Removing the decorator
-        # entirely would force all callers to refresh their pre-built
-        # ``Settings`` instances, which is unneeded churn.
-        return self
 
     @property
     def db_url(self) -> str:

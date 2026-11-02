@@ -105,12 +105,45 @@ def _ensure_columns(engine: Engine) -> None:
                 pass
 
 
+_LEGACY_TABLES = ("review_findings", "review_runs", "pr_summaries")
+
+
+def _drop_legacy_tables(engine: Engine) -> None:
+    """Permanently drop tables from the removed LLM/agent stack.
+
+    v1.3.0 removed direct agent execution and the models that backed it
+    (``PRSummary``, ``ReviewRun``, ``ReviewFinding``). The ORM no longer
+    creates those tables, but existing installs still carry them. Dropping
+    them here keeps old databases from accumulating dead schema.
+
+    Order is load-bearing: ``review_findings.review_run_id`` references
+    ``review_runs.id`` and ``engine_from_settings`` enables
+    ``PRAGMA foreign_keys=ON``. SQLite implements DROP TABLE as an
+    implicit DELETE, so dropping the parent while child rows exist raises
+    ``FOREIGN KEY constraint failed``.
+
+    Best-effort like ``_ensure_columns``: a failed drop must not block
+    startup, and ``IF EXISTS`` makes every subsequent startup a no-op.
+    """
+    for table_name in _LEGACY_TABLES:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+        except Exception:
+            # A locked database or a future FK layout should not prevent
+            # the app from starting. The table is inert either way.
+            pass
+
+
 class Database:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
         self.SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
     def create_all(self) -> None:
+        # Drop legacy tables first: once the ORM models are gone,
+        # create_all() won't recreate them.
+        _drop_legacy_tables(self.engine)
         Base.metadata.create_all(self.engine)
         # Catch up any pre-existing tables to the latest model so old
         # installs don't 500 on `no such column: <new_field>`.

@@ -216,7 +216,7 @@ def refresh(repo: str = typer.Option("", "--repo", help="owner/name")):
     """Refresh PRs from GitHub."""
     db = _db()
     settings = load_settings()
-    from tl_towerwatch.services.pull_requests import sync_repo, sync_one_pr
+    from tl_towerwatch.services.pull_requests import sync_repo
     with GitHubClient(token=resolve_token(settings)) as gh:
         if repo:
             o, name = repo.split("/", 1)
@@ -233,7 +233,6 @@ def refresh(repo: str = typer.Option("", "--repo", help="owner/name")):
 def status():
     """Show current user, last refresh, rate limit, repo counts."""
     db = _db()
-    settings = load_settings()
     from tl_towerwatch.services.repos import list_repos
     repos = list_repos(db)
     typer.echo(f"Repos: {len(repos)} ({sum(1 for r in repos if r.enabled)} enabled)")
@@ -343,5 +342,7 @@ def review(
             data_dir=settings.data_dir,
             owner=owner, name=name, number=int(number),
             slot=slot, mode=mode,
+            max_files=settings.max_diff_files,
+            max_lines=settings.max_diff_lines,
         )
     typer.echo(prompt_text)

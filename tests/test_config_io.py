@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from tl_towerwatch.config import AuthCfg, Settings
-from tl_towerwatch.config_io import load_config_yaml, merge_into_settings, save_config_yaml
+from tl_towerwatch.config_io import load_config_yaml, save_config_yaml
 
 
 def test_save_and_load_roundtrip(tmp_path: Path):
@@ -14,9 +13,3 @@ def test_save_and_load_roundtrip(tmp_path: Path):
 
 def test_load_missing_returns_empty(tmp_path: Path):
     assert load_config_yaml(tmp_path / "missing.yaml") == {}
-
-
-def test_merge_into_settings_updates_auth_mode(tmp_path: Path):
-    s = Settings(auth=AuthCfg(mode="pat"))
-    merge_into_settings(s, {"auth": {"mode": "oauth"}})
-    assert s.auth.mode == "oauth"

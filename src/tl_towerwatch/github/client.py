@@ -28,11 +28,7 @@ class GitHubClient:
             },
             timeout=30.0,
         )
-        self._last_rate_limit: RateLimit | None = None
         self._oauth_scopes: list[str] | None = None
-
-    def last_rate_limit(self) -> RateLimit | None:
-        return self._last_rate_limit
 
     def last_oauth_scopes(self) -> list[str] | None:
         """Return the OAuth scopes from the most recent response's
@@ -49,19 +45,12 @@ class GitHubClient:
     def __exit__(self, *exc):
         self.close()
 
-    def _capture_rate_limit(self, r: httpx.Response) -> None:
-        rem = r.headers.get("X-RateLimit-Remaining")
-        reset = r.headers.get("X-RateLimit-Reset")
-        if rem is not None and reset is not None:
-            self._last_rate_limit = RateLimit(remaining=int(rem), reset=int(reset))
-
     def _capture_oauth_scopes(self, r: httpx.Response) -> None:
         scopes = r.headers.get("X-OAuth-Scopes")
         if scopes is not None:
             self._oauth_scopes = [s.strip() for s in scopes.split(",") if s.strip()]
 
     def _check(self, r: httpx.Response) -> dict[str, Any]:
-        self._capture_rate_limit(r)
         self._capture_oauth_scopes(r)
         r.raise_for_status()
         return r.json()
@@ -91,20 +80,6 @@ class GitHubClient:
         d = self._check(self._client.get(f"/repos/{owner}/{name}"))
         return RepoMeta(owner=owner, name=name, full_name=d["full_name"], private=d["private"])
 
-    def list_open_prs(self, owner: str, name: str) -> list[PullRequestData]:
-        out: list[PullRequestData] = []
-        page = 1
-        while True:
-            d = self._check(self._client.get(
-                f"/repos/{owner}/{name}/pulls",
-                params={"state": "open", "per_page": 100, "page": page},
-            ))
-            if not d:
-                break
-            for pr in d:
-                out.append(self._parse_pr(pr))
-        return out
-
     def list_repo_prs(self, owner: str, name: str,
                        state: str = "all") -> list[PullRequestData]:
         """List every PR in the repo (open + closed + merged).
@@ -114,10 +89,9 @@ class GitHubClient:
         disambiguates the two. We paginate because the listing is
         unbounded.
 
-        v1.3.x: replaces the old ``list_open_prs``-only sync loop so
-        state changes (open → closed → merged) get picked up the next
-        time the scheduler ticks. The per-PR refresh path is
-        unchanged.
+        v1.3.x: the sync loop lists with ``state=all`` so state changes
+        (open → closed → merged) get picked up the next time the
+        scheduler ticks. The per-PR refresh path is unchanged.
         """
         out: list[PullRequestData] = []
         page = 1

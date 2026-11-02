@@ -104,7 +104,6 @@ def _replace_pr_subresources(
     s.query(IssueComment).filter(IssueComment.pr_id == pr_id).delete()
     s.query(PRCommit).filter(PRCommit.pr_id == pr_id).delete()
     s.query(PRFile).filter(PRFile.pr_id == pr_id).delete()
-    s.query(IssueComment).filter(IssueComment.pr_id == pr_id).delete()
     for r in gh.list_reviews(owner, name, number):
         _upsert_user(
             s,
@@ -201,8 +200,8 @@ def sync_repo(db: Database, gh: GitHubClient, repo: Repo) -> int:
     """Sync every PR for ``repo`` from GitHub into the local cache.
 
     v1.3.x: fetches all PRs (open + closed + merged) so state
-    transitions get picked up. The old ``list_open_prs``-only loop
-    missed the open→closed/merged transition entirely (GitHub's
+    transitions get picked up. Listing only open PRs missed the
+    open→closed/merged transition entirely (GitHub's
     ``state=open`` filter omits closed PRs), so a PR closed on
     GitHub would forever read as "open" in the local cache. The
     pagination guard stops at 2,000 PRs per repo which is plenty
@@ -317,9 +316,8 @@ def save_manual_description(
 ) -> PullRequest:
     """Persist the author's manual description for a PR.
 
-    Manual description replaces the AI summary that used to live on
-    PRSummary — the user writes their own TL;DR for reviewers. Empty
-    text clears the field.
+    The user writes their own TL;DR for reviewers; empty text clears
+    the field.
     """
     with db.session() as s:
         row = s.execute(

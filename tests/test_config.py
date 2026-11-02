@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import pytest
 
 from tl_towerwatch.config import load_settings
 

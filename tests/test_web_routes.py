@@ -563,8 +563,8 @@ def test_dashboard_dropdowns_show_all_repos_and_authors(tmp_path, monkeypatch, r
     db.create_all()
     # Three repos; PRs only in one of them.
     repo_a = add_repo(db, "acme", "alpha")
-    repo_b = add_repo(db, "acme", "beta")
-    repo_c = add_repo(db, "other-org", "delta")
+    add_repo(db, "acme", "beta")
+    add_repo(db, "other-org", "delta")
     with db.session() as s:
         # 4 known authors — only one has any PRs.
         for login in ("dimh", "alice", "bob", "carol"):
@@ -1010,7 +1010,7 @@ def test_repos_refresh_single_repo(tmp_path, monkeypatch, respx_mock):
         return_value=Response(200, json={"login": "dimh"},
                               headers={"X-OAuth-Scopes": "repo, read:user"})
     )
-    # sync_repo -> list_open_prs -> GET /repos/{owner}/{name}/pulls; return
+    # sync_repo -> list_repo_prs -> GET /repos/{owner}/{name}/pulls; return
     # an empty list so the loop exits without hitting /reviews or /files.
     respx_mock.get("https://api.github.com/repos/o/n/pulls").mock(
         return_value=Response(200, json=[])
@@ -1052,103 +1052,6 @@ def test_repos_refresh_bounces_on_auth_error(tmp_path, monkeypatch, respx_mock):
         r = c.post("/repos/o/n/refresh", follow_redirects=False)
         assert r.status_code == 303
         assert r.headers["location"].startswith("/settings")
-
-
-# ---------------------------------------------------------------------------
-# v1.1 Task 11 — PR detail page rebuilt against the v3 mock
-# (`.superpowers/brainstorm/88238-1790999216/content/pr-detail-v3.html`)
-# ---------------------------------------------------------------------------
-
-def _seed_pr_detail(tmp_path, with_summary: bool = True):
-    """Seed a single PR with one review run (2 findings: 1 resolved, 1
-    pending), one human review and an optional PRSummary. Returns the
-    raw `db` handle so the test can wire extra fixtures in if needed."""
-    from tl_towerwatch.config import load_settings
-    from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import (
-        PRSummary,
-        PullRequest,
-        Review,
-        ReviewFinding,
-        ReviewRun,
-        User,
-        now_iso,
-    )
-    from tl_towerwatch.services.repos import add_repo
-    settings = load_settings(tmp_path)
-    db = engine_from_settings(settings)
-    db.create_all()
-    repo = add_repo(db, "o", "n")
-    with db.session() as s:
-        for login in ("alice", "carlos.r"):
-            if s.get(User, login) is None:
-                s.add(User(login=login))
-        s.flush()
-        pr = PullRequest(
-            repo_id=repo.id, number=1,
-            title="Refactor checkout flow",
-            body="Some long description.",
-            author_login="alice", state="open", draft=0,
-            head_sha="a3f4e2d9b8", base_ref="main",
-            html_url="https://example.com/o/n/pull/1",
-            commits_count=3,
-            created_at=now_iso(), updated_at=now_iso(),
-            cached_at=now_iso(),
-        )
-        s.add(pr); s.flush()
-        if with_summary:
-            s.add(PRSummary(
-                pr_id=pr.id,
-                summary="Mueve la lógica de Stripe a un servicio.",
-                head_sha="a3f4e2d9b8",
-                model="claude-3.5-sonnet",
-                generated_at=now_iso(),
-            ))
-        # Newest run = id 1 (only one in this seed). Findings attached so
-        # the test can verify the resolved+pending labels render.
-        run = ReviewRun(pr_id=pr.id, agent_runner="claude",
-                        skills_json='["superpowers","ponytail"]',
-                        mode="fresh", status="done",
-                        started_at=now_iso(), finished_at=now_iso())
-        s.add(run); s.flush()
-        s.add(ReviewFinding(review_run_id=run.id,
-                            finding_key="a.py:1:dead",
-                            severity="high",
-                            file_path="a.py", line=1,
-                            description="dead code path",
-                            status="resolved",
-                            resolved_in_commit="a3f4e2d9b8"))
-        s.add(ReviewFinding(review_run_id=run.id,
-                            finding_key="b.py:7:leak",
-                            severity="medium",
-                            file_path="b.py", line=7,
-                            description="resource leak",
-                            status="pending"))
-        s.add(Review(pr_id=pr.id, reviewer_login="carlos.r",
-                     state="commented",
-                     submitted_at=now_iso(),
-                     body="¿Por qué retorna dict?"))
-    return db
-
-
-def test_pr_detail_summary_card_hidden_when_no_summary(tmp_path, monkeypatch):
-    """v1.1 Task 11: when a PRSummary row is absent the green resumen
-    card is fully hidden — not rendered with empty text, not stubbed
-    with "(sin resumen)". This is the assertion the spec uses to
-    distinguish "summary pending" from "no summary ever"."""
-    monkeypatch.setenv("TOWERWATCH_DATA_DIR", str(tmp_path))
-    db = _seed_pr_detail(tmp_path, with_summary=False)
-    from tl_towerwatch.web import create_app
-    app = create_app()
-    with TestClient(app) as c:
-        r = c.get("/pr/o/n/1")
-        assert r.status_code == 200
-        body = r.text
-        assert "RESUMEN AUTOMÁTICO" not in body
-        # The other elements must still render normally — the missing
-        # summary shouldn't blank the page.
-        assert "← volver al dashboard" in body
-        assert "Overview" in body
 
 
 def test_settings_auth_save_roundtrip(tmp_path, monkeypatch, respx_mock):
@@ -1202,7 +1105,7 @@ def test_pr_manual_description_save_route(tmp_path, monkeypatch, respx_mock):
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1249,7 +1152,7 @@ def test_pr_manual_notes_save_route(tmp_path, monkeypatch, respx_mock):
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1291,7 +1194,7 @@ def test_pr_show_review_prompt_route_returns_html_fragment(tmp_path, monkeypatch
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     from tl_towerwatch.config_io import save_config_yaml
     settings = load_settings(tmp_path)
@@ -1423,7 +1326,7 @@ def test_pr_detail_renders_prompt_viewer(tmp_path, monkeypatch, respx_mock):
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1494,7 +1397,7 @@ def test_pr_detail_renders_conversation_and_review_comments(
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
     from tl_towerwatch.db.models import (
-        IssueComment, PullRequest, Repo, ReviewComment, User,
+        IssueComment, PullRequest, ReviewComment, User,
     )
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
@@ -1583,7 +1486,7 @@ def test_pr_reply_issue_route_posts_to_github_and_redirects(
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1647,7 +1550,7 @@ def test_pr_reply_review_comment_route_posts_to_github(
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1704,7 +1607,7 @@ def test_pr_reply_empty_body_redirects_with_error(
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1746,7 +1649,7 @@ def test_pr_reply_issue_route_handles_github_403(
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -1800,7 +1703,7 @@ def test_pr_reply_issue_route_handles_network_error(
         side_effect=httpx.ConnectError("no DNS"))
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)
@@ -2056,7 +1959,7 @@ def test_pr_detail_renders_commits_and_files_tabs(
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
     from tl_towerwatch.db.models import (
-        PRCommit, PRFile, PullRequest, Repo, User,
+        PRCommit, PRFile, PullRequest, User,
     )
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
@@ -2145,7 +2048,7 @@ def test_pr_detail_tab_script_runs_after_sections(
     (tmp_path / ".env").write_text("TOWERWATCH_GITHUB_TOKEN=ghp_FAKE\n")
     from tl_towerwatch.config import load_settings
     from tl_towerwatch.db.database import engine_from_settings
-    from tl_towerwatch.db.models import PullRequest, Repo, User
+    from tl_towerwatch.db.models import PullRequest, User
     from tl_towerwatch.services.repos import add_repo
     settings = load_settings(tmp_path)
     db = engine_from_settings(settings)

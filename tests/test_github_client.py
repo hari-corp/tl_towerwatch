@@ -16,4 +16,3 @@ def test_get_authenticated_user():
     c = GitHubClient(token="x")
     u = c.get_authenticated_user()
     assert u.login == "dimh"
-    assert c.last_rate_limit().remaining == 4999

@@ -680,7 +680,7 @@ def repo_config_page(request: Request, owner: str, name: str):
             status_code=404,
         )
     try:
-        authors = json.loads(repo.allowed_authors_json or "[]")
+        authors = _json.loads(repo.allowed_authors_json or "[]")
     except Exception:
         authors = []
     repo.allowed_authors_csv = ", ".join(authors)
@@ -775,9 +775,6 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
     # User rows keyed by login so the template can render avatars and
     # display names without hitting the DB per row.
     user_by_login: dict[str, User] = {}
-    resolved_count = 0
-    pending_count = 0
-    new_count = 0
     commits_count = 0
     human_reviews_count = 0
     human_comments_count = 0
@@ -873,9 +870,6 @@ def pr_detail(request: Request, owner: str, name: str, number: int):
          "issue_threads": issue_threads,
          "review_threads": review_threads,
          "issue_comments_count": issue_comments_count,
-         "resolved_count": resolved_count,
-         "pending_count": pending_count,
-         "new_count": new_count,
          "commits_count": commits_count,
          "human_reviews_count": human_reviews_count,
          "human_comments_count": human_comments_count,
@@ -1124,7 +1118,6 @@ def pr_show_review_prompt(request: Request, owner: str, name: str, number: int,
     if slot not in PROMPT_SLOTS:
         slot = "review"
     settings = load_settings()
-    db = engine_from_settings(settings)
     token = _safe_resolve_token(settings)
     if isinstance(token, RedirectResponse):
         return token
@@ -1138,6 +1131,8 @@ def pr_show_review_prompt(request: Request, owner: str, name: str, number: int,
                 number=number,
                 slot=slot,
                 mode=mode,
+                max_files=settings.max_diff_files,
+                max_lines=settings.max_diff_lines,
             )
     except Exception as e:
         body = f"<error: {e}>"
@@ -1177,7 +1172,6 @@ def settings_page(request: Request):
     settings = load_settings()
     db = engine_from_settings(settings)
     db.create_all()
-    cfg = load_config_yaml(settings.data_dir / "config.yaml")
     # Global prompts — load from disk (preserves user edits) with the
     # built-in defaults as fallback so a first-run user sees the
     # templates pre-filled.
@@ -1274,7 +1268,6 @@ def settings_auth_disconnect():
 def settings_restore_defaults():
     """Wipe both .env and config.yaml back to empty-template state.
     The user has to confirm via a JS prompt (template)."""
-    import os
     settings = load_settings()
     env_path = settings.data_dir / ".env"
     if env_path.exists():
