@@ -223,6 +223,11 @@ __marimo__/
 data/
 .superpowers/
 
+# AI assistant local overrides (shared files are committed)
+.claude/settings.local.json
+CLAUDE.local.md
+AGENTS.local.md
+
 # IDE
 .idea/
 .vscode/
